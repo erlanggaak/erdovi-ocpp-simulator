@@ -1,0 +1,24 @@
+# Build outputs
+/_build/
+/deps/
+/cover/
+/.elixir_ls/
+/erl_crash.dump
+
+# Environment
+.env
+.env.local
+
+# Local cache and editor files
+.DS_Store
+*.swp
+
+# Node leftovers from repository transition
+/node_modules/
+/package.json
+/package-lock.json
+
+# Legacy planning artifacts (excluded from final simulator repository)
+/bin/
+/prompts/
+/tasks/

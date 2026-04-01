@@ -1,0 +1,32 @@
+import Config
+
+config :ocpp_simulator,
+  namespace: OcppSimulator,
+  generators: [timestamp_type: :utc_datetime]
+
+config :ocpp_simulator, OcppSimulatorWeb.Endpoint,
+  url: [host: "localhost"],
+  render_errors: [
+    formats: [html: OcppSimulatorWeb.ErrorHTML, json: OcppSimulatorWeb.ErrorJSON],
+    layout: false
+  ],
+  pubsub_server: OcppSimulator.PubSub,
+  live_view: [signing_salt: "CHANGE_ME_LIVE_VIEW_SALT"]
+
+config :phoenix, :json_library, Jason
+
+config :logger, :default_formatter,
+  format: "$time $metadata[$level] $message\n",
+  metadata: [:request_id, :run_id, :session_id, :charge_point_id, :message_id]
+
+config :ocpp_simulator, :runtime,
+  max_concurrent_runs: 25,
+  max_active_sessions: 200,
+  ws_retry_base_delay_ms: 1_000
+
+config :ocpp_simulator, :mongo,
+  url: "mongodb://localhost:27017/ocpp_simulator_dev",
+  pool_size: 10,
+  database: "ocpp_simulator_dev"
+
+config :ocpp_simulator, :allow_untrusted_role_header, false
