@@ -7,6 +7,26 @@ parse_positive_int = fn raw, default ->
   end
 end
 
+parse_boolean = fn raw, default ->
+  case raw do
+    nil ->
+      default
+
+    _ ->
+      case raw |> to_string() |> String.trim() |> String.downcase() do
+        "1" -> true
+        "true" -> true
+        "yes" -> true
+        "on" -> true
+        "0" -> false
+        "false" -> false
+        "no" -> false
+        "off" -> false
+        _ -> default
+      end
+  end
+end
+
 host = System.get_env("PHX_HOST") || "localhost"
 port = parse_positive_int.(System.get_env("PORT"), 4000)
 
@@ -30,6 +50,15 @@ config :ocpp_simulator, :mongo,
   url: System.get_env("MONGO_URL") || "mongodb://localhost:27017/ocpp_simulator_dev",
   pool_size: parse_positive_int.(System.get_env("MONGO_POOL_SIZE"), 10),
   database: System.get_env("MONGO_DATABASE") || "ocpp_simulator_dev"
+
+default_mongo_autostart = config_env() != :test
+
+config :ocpp_simulator,
+  mongo_autostart: parse_boolean.(System.get_env("MONGO_AUTOSTART"), default_mongo_autostart),
+  mongo_index_bootstrap:
+    parse_boolean.(System.get_env("MONGO_INDEX_BOOTSTRAP"), default_mongo_autostart),
+  mongo_index_bootstrap_retry_ms:
+    parse_positive_int.(System.get_env("MONGO_INDEX_BOOTSTRAP_RETRY_MS"), 5_000)
 
 config :ocpp_simulator, :runtime,
   max_concurrent_runs: parse_positive_int.(System.get_env("MAX_CONCURRENT_RUNS"), 25),

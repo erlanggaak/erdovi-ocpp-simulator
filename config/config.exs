@@ -29,4 +29,9 @@ config :ocpp_simulator, :mongo,
   pool_size: 10,
   database: "ocpp_simulator_dev"
 
+config :ocpp_simulator,
+  mongo_autostart: config_env() != :test,
+  mongo_index_bootstrap: config_env() != :test,
+  mongo_index_bootstrap_retry_ms: 5_000
+
 config :ocpp_simulator, :allow_untrusted_role_header, false
