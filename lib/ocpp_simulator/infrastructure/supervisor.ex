@@ -7,6 +7,7 @@ defmodule OcppSimulator.Infrastructure.Supervisor do
 
   alias OcppSimulator.Infrastructure.Persistence.Mongo.IndexBootstrapper
   alias OcppSimulator.Infrastructure.Persistence.Mongo.Topology
+  alias OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager
 
   def start_link(init_arg) do
     Supervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
@@ -18,7 +19,8 @@ defmodule OcppSimulator.Infrastructure.Supervisor do
       [
         {Registry, keys: :unique, name: OcppSimulator.Infrastructure.SessionRegistry},
         {DynamicSupervisor,
-         strategy: :one_for_one, name: OcppSimulator.Infrastructure.WebSocketConnectionSupervisor}
+         strategy: :one_for_one, name: OcppSimulator.Infrastructure.WebSocketConnectionSupervisor},
+        {SessionManager, []}
       ] ++ mongo_children()
 
     Supervisor.init(children, strategy: :one_for_one)

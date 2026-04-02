@@ -5,7 +5,7 @@ defmodule OcppSimulator.Domain.Sessions.SessionStateMachine do
 
   @states [:idle, :connected, :active, :reconnecting, :disconnected, :terminated]
   @allowed_transitions %{
-    idle: [:connected],
+    idle: [:connected, :reconnecting, :disconnected, :terminated],
     connected: [:active, :reconnecting, :disconnected, :terminated],
     active: [:reconnecting, :disconnected, :terminated],
     reconnecting: [:connected, :disconnected, :terminated],

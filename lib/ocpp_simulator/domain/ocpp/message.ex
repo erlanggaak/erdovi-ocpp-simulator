@@ -3,6 +3,23 @@ defmodule OcppSimulator.Domain.Ocpp.Message do
   OCPP 1.6J message value object with strict frame conversion rules.
   """
 
+  @supported_actions [
+    "BootNotification",
+    "Heartbeat",
+    "StatusNotification",
+    "Authorize",
+    "StartTransaction",
+    "MeterValues",
+    "StopTransaction",
+    "RemoteStartTransaction",
+    "RemoteStopTransaction",
+    "Reset",
+    "ChangeAvailability",
+    "TriggerMessage",
+    "ChangeConfiguration",
+    "GetConfiguration"
+  ]
+
   @enforce_keys [:type, :message_id, :payload]
   defstruct [
     :type,
@@ -127,6 +144,31 @@ defmodule OcppSimulator.Domain.Ocpp.Message do
 
   def from_frame(_frame, _direction),
     do: {:error, {:invalid_frame, :unsupported_shape}}
+
+  @spec call?(t()) :: boolean()
+  def call?(%__MODULE__{type: :call}), do: true
+  def call?(%__MODULE__{}), do: false
+
+  @spec response?(t()) :: boolean()
+  def response?(%__MODULE__{type: type}) when type in [:call_result, :call_error], do: true
+  def response?(%__MODULE__{}), do: false
+
+  @spec correlates?(t(), t()) :: boolean()
+  def correlates?(%__MODULE__{type: :call, message_id: message_id}, %__MODULE__{
+        message_id: message_id,
+        type: response_type
+      })
+      when response_type in [:call_result, :call_error],
+      do: true
+
+  def correlates?(%__MODULE__{}, %__MODULE__{}), do: false
+
+  @spec supported_actions() :: [String.t()]
+  def supported_actions, do: @supported_actions
+
+  @spec supported_action?(String.t()) :: boolean()
+  def supported_action?(action) when is_binary(action), do: action in @supported_actions
+  def supported_action?(_action), do: false
 
   defp validate_message_id(value), do: validate_non_empty_string(value, :message_id)
 

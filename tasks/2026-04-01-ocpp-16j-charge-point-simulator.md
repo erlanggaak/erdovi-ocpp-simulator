@@ -545,6 +545,15 @@ Integration points with existing repository:
 - `test/ocpp_simulator/infrastructure/persistence/mongo/repositories_test.exs` (NEW) — Contract-level adapter integration coverage for Mongo repositories and index bootstrap.
 - `test/ocpp_simulator/infrastructure/persistence/mongo/pagination_filter_test.exs` (NEW) — Run history/log pagination and filter-first behavior coverage.
 - `test_support/in_memory_mongo_client.ex` (NEW) — In-memory Mongo client test double used by persistence adapter tests.
+- `lib/ocpp_simulator/infrastructure/serialization/ocpp_json.ex` (NEW) — OCPP JSON frame encoder/decoder boundary used by transport and protocol tests.
+- `lib/ocpp_simulator/infrastructure/serialization/ocpp_json/payload_validator.ex` (NEW) — Strict OCPP 1.6J payload schema validation for supported v1 actions.
+- `lib/ocpp_simulator/infrastructure/transport/websocket/adapter.ex` (NEW) — Transport adapter behavior contract for connect/disconnect/frame send operations.
+- `lib/ocpp_simulator/infrastructure/transport/websocket/noop_adapter.ex` (NEW) — Safe default transport adapter when no runtime WebSocket adapter is configured.
+- `lib/ocpp_simulator/infrastructure/transport/websocket/remote_operation_handler.ex` (NEW) — State-aware inbound CSMS remote-operation strategy handler with correlated responses.
+- `test/ocpp_simulator/infrastructure/serialization/ocpp_json_test.exs` (NEW) — Protocol coverage for strict serialization/deserialization, v1 action payload validation, and fault-frame behavior.
+- `test/ocpp_simulator/infrastructure/transport/websocket/outbound_queue_test.exs` (NEW) — Backpressure, retry, and drop-behavior coverage for outbound queue dispatch.
+- `test/ocpp_simulator/infrastructure/transport/websocket/session_manager_test.exs` (NEW) — Session lifecycle, reconnect retry, correlation, and inbound remote-command flow coverage.
+- `test/ocpp_simulator/infrastructure/transport/websocket/remote_operation_handler_test.exs` (NEW) — Remote operation strategy acceptance/rejection and call-error behavior coverage.
 
 ### 8. Open Questions / Concerns
 All previously listed questions are resolved in this revision.
@@ -607,19 +616,19 @@ Add repository contract and adapter integration tests in `test/ocpp_simulator/` 
 Implement and verify pagination/filter-first query patterns for run history and logs retrieval to prevent unbounded read patterns in monitoring screens.
 
 # Task 5 — Implement OCPP 1.6J transport, correlation, and strict schema validation
-- [ ] Task 5.1
+- [x] Task 5.1
 Implement WebSocket session lifecycle management in `lib/ocpp_simulator/infrastructure/transport/websocket/session_manager.ex` covering connect, disconnect, reconnect, retries, and lifecycle state synchronization.
 
-- [ ] Task 5.2
+- [x] Task 5.2
 Implement strict OCPP frame serialization/deserialization and payload validation in `lib/ocpp_simulator/infrastructure/serialization/ocpp_json/` and `lib/ocpp_simulator/domain/ocpp/message.ex`, including Call/CallResult/CallError correlation by unique message IDs.
 
-- [ ] Task 5.3
+- [x] Task 5.3
 Implement inbound remote-operation handling flow for CSMS commands (`RemoteStartTransaction`, `RemoteStopTransaction`, `TriggerMessage`, `Reset`, `ChangeAvailability`) with state-aware action strategy and correlated response emission.
 
-- [ ] Task 5.4
+- [x] Task 5.4
 Implement backpressure-aware outbound message handling and retry coordination in `lib/ocpp_simulator/infrastructure/transport/websocket/outbound_queue.ex` to support bounded concurrency under load.
 
-- [ ] Task 5.5
+- [x] Task 5.5
 Implement v1 action support coverage and protocol behavior tests in `test/ocpp_simulator/` for BootNotification, Heartbeat, StatusNotification, Authorize, StartTransaction, MeterValues, StopTransaction, remote control actions, reset, availability changes, trigger message, basic configuration management, and basic fault scenarios.
 
 # Task 6 — Deliver scenario DSL, template lifecycle, and execution orchestration
@@ -717,3 +726,10 @@ Produce OSS documentation and governance files in `README.md`, `docs/ARCHITECTUR
 - Implemented Task `4.4` by adding bounded pagination + filter-first query paths for run history/log retrieval (`ScenarioRunRepository.list_history/1`, `LogRepository.list/1`) with dedicated coverage in `test/ocpp_simulator/infrastructure/persistence/mongo/pagination_filter_test.exs`.
 - Validation: full test suite passes with `mix test` (`59` tests passing).
 - Assumption: persistence adapter tests run against an in-memory Mongo client double (`test_support/in_memory_mongo_client.ex`) to validate contract behavior without requiring an external MongoDB instance during CI/local test runs.
+- Implemented Task `5.1` with a supervised WebSocket session manager that handles connect/disconnect/reconnect flows, retry scheduling with exponential backoff, lifecycle synchronization via the domain session state machine, and correlation-timeout expiration helpers.
+- Implemented Task `5.2` by adding strict OCPP JSON codec + payload validator modules and extending domain OCPP messages with supported-action metadata and correlation helper predicates for call/response matching.
+- Implemented Task `5.3` by adding inbound CSMS remote-operation strategy handling (`RemoteStartTransaction`, `RemoteStopTransaction`, `TriggerMessage`, `Reset`, `ChangeAvailability`) that emits correlated `CallResult`/`CallError` responses with state-aware accept/reject behavior.
+- Implemented Task `5.4` by introducing a bounded outbound queue worker with in-flight limits, backpressure rejection, async dispatch, retry coordination, and terminal drop accounting when retry budgets are exhausted.
+- Implemented Task `5.5` with focused protocol/transport coverage in new tests for v1 action payload validation, fault/call-error behavior, remote-operation strategy outcomes, outbound queue backpressure/retry semantics, and session lifecycle + correlation flows.
+- Validation: full test suite passes with `mix test` (`82` tests passing, `1` skipped).
+- Assumption: runtime WebSocket I/O remains adapter-driven for now (`transport adapter` behavior + default `NoopAdapter`), enabling protocol/session verification without introducing a concrete network client in this task batch.

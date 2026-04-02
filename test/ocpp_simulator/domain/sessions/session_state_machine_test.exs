@@ -25,6 +25,15 @@ defmodule OcppSimulator.Domain.Sessions.SessionStateMachineTest do
              SessionStateMachine.transition(session, :active, %{run_id: "run-1"})
   end
 
+  test "transition/3 allows reconnecting state from idle for failed initial connect lifecycle" do
+    {:ok, session} = SessionStateMachine.new_session("session-1")
+
+    assert {:ok, updated_session, _event} =
+             SessionStateMachine.transition(session, :reconnecting, %{run_id: "run-1"})
+
+    assert updated_session.state == :reconnecting
+  end
+
   test "transition/3 returns error instead of raising for unknown current state" do
     corrupted_session = %SessionStateMachine.Session{
       id: "session-unknown",
