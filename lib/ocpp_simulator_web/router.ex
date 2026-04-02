@@ -30,28 +30,48 @@ defmodule OcppSimulatorWeb.Router do
     end
 
     live_session :charge_points,
-      on_mount: [{LiveAuthorization, :manage_charge_points}] do
+      on_mount: [{LiveAuthorization, :view_charge_points}] do
       live("/charge-points", ChargePointsLive, :index)
     end
 
     live_session :target_endpoints,
-      on_mount: [{LiveAuthorization, :manage_target_endpoints}] do
+      on_mount: [{LiveAuthorization, :view_target_endpoints}] do
       live("/target-endpoints", TargetEndpointsLive, :index)
     end
 
     live_session :scenarios,
-      on_mount: [{LiveAuthorization, :manage_scenarios}] do
+      on_mount: [{LiveAuthorization, :view_scenarios}] do
       live("/scenarios", ScenariosLive, :index)
     end
 
     live_session :templates,
-      on_mount: [{LiveAuthorization, :manage_templates}] do
+      on_mount: [{LiveAuthorization, :view_templates}] do
       live("/templates", TemplatesLive, :index)
+    end
+
+    live_session :scenario_builder,
+      on_mount: [{LiveAuthorization, :manage_scenarios}] do
+      live("/scenario-builder", ScenarioBuilderLive, :index)
     end
 
     live_session :run_operations,
       on_mount: [{LiveAuthorization, :start_run}] do
       live("/runs", RunOperationsLive, :index)
+    end
+
+    live_session :run_history,
+      on_mount: [{LiveAuthorization, :view_runs}] do
+      live("/run-history", RunHistoryLive, :index)
+    end
+
+    live_session :live_console,
+      on_mount: [{LiveAuthorization, :view_runs}] do
+      live("/live-console", LiveConsoleLive, :index)
+    end
+
+    live_session :logs,
+      on_mount: [{LiveAuthorization, :view_runs}] do
+      live("/logs", LogsLive, :index)
     end
   end
 
@@ -68,6 +88,11 @@ defmodule OcppSimulatorWeb.Router do
     post("/target-endpoints", ManagementController, :create_target_endpoint)
     post("/scenarios", ManagementController, :create_scenario)
     post("/templates", ManagementController, :create_template)
+    get("/scenarios/export", ArtifactController, :export_scenarios)
+    post("/scenarios/import", ArtifactController, :import_scenarios)
+    get("/templates/export", ArtifactController, :export_templates)
+    post("/templates/import", ArtifactController, :import_templates)
+    post("/templates/starter", ArtifactController, :seed_starter_templates)
 
     post("/runs", RunController, :create)
     post("/runs/:id/cancel", RunController, :cancel)

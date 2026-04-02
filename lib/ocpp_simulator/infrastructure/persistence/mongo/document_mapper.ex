@@ -109,6 +109,12 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.DocumentMapper do
       "version" => scenario.version,
       "schema_version" => scenario.schema_version,
       "variables" => scenario.variables,
+      "variable_scopes" => Enum.map(scenario.variable_scopes, &Atom.to_string/1),
+      "validation_policy" => %{
+        "strict_ocpp_schema" => scenario.validation_policy.strict_ocpp_schema,
+        "strict_state_transitions" => scenario.validation_policy.strict_state_transitions,
+        "strict_variable_resolution" => scenario.validation_policy.strict_variable_resolution
+      },
       "steps" =>
         Enum.map(scenario.steps, fn step ->
           %{
@@ -132,6 +138,9 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.DocumentMapper do
       version: fetch(document, :version),
       schema_version: fetch(document, :schema_version),
       variables: fetch(document, :variables) || %{},
+      variable_scopes: fetch(document, :variable_scopes) || Scenario.default_variable_scopes(),
+      validation_policy:
+        fetch(document, :validation_policy) || Scenario.validation_policy_defaults(),
       steps: normalize_steps(fetch(document, :steps) || [])
     }
 

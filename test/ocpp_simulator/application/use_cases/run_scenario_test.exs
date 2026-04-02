@@ -10,6 +10,85 @@ defmodule OcppSimulator.Application.UseCases.RunScenarioTest do
 
     def get("scn-ready"), do: {:ok, build_scenario!("scn-ready", ready_steps())}
     def get("scn-empty"), do: {:ok, build_scenario!("scn-empty", [])}
+
+    def get("scn-timeout"),
+      do:
+        {:ok,
+         build_scenario!("scn-timeout", [
+           %{id: "wait", type: :wait, order: 1, delay_ms: 1_000}
+         ])}
+
+    def get("scn-delay"),
+      do:
+        {:ok,
+         build_scenario!("scn-delay", [
+           %{id: "wait", type: :wait, order: 1, delay_ms: 30}
+         ])}
+
+    def get("scn-invalid-schema"),
+      do:
+        {:ok,
+         build_scenario!("scn-invalid-schema", [
+           %{id: "boot", type: :send_action, order: 1, payload: %{"action" => "BootNotification"}}
+         ])}
+
+    def get("scn-variable-default"),
+      do:
+        {:ok,
+         build_scenario!(
+           "scn-variable-default",
+           [
+             %{
+               id: "set-token",
+               type: :set_variable,
+               order: 1,
+               payload: %{"name" => "resolved_token", "value" => "{{token}}"}
+             }
+           ],
+           %{
+             variables: %{"token" => "scenario-token"}
+           }
+         )}
+
+    def get("scn-variable-order"),
+      do:
+        {:ok,
+         build_scenario!(
+           "scn-variable-order",
+           [
+             %{
+               id: "set-token",
+               type: :set_variable,
+               order: 1,
+               payload: %{"name" => "resolved_token", "value" => "{{token}}"}
+             }
+           ],
+           %{
+             variable_scopes: [:scenario, :session, :step],
+             variables: %{"token" => "scenario-token"}
+           }
+         )}
+
+    def get("scn-invalid-transition"),
+      do:
+        {:ok,
+         build_scenario!("scn-invalid-transition", [
+           %{
+             id: "start",
+             type: :send_action,
+             order: 1,
+             payload: %{
+               "action" => "StartTransaction",
+               "payload" => %{
+                 "connectorId" => 1,
+                 "idTag" => "RFID-1",
+                 "meterStart" => 0,
+                 "timestamp" => "2026-04-01T10:00:00Z"
+               }
+             }
+           }
+         ])}
+
     def get(_id), do: {:error, :not_found}
 
     def list(_filters), do: {:ok, []}
@@ -17,18 +96,78 @@ defmodule OcppSimulator.Application.UseCases.RunScenarioTest do
 
     defp ready_steps do
       [
-        %{id: "boot", type: :send_action, order: 1, payload: %{"action" => "BootNotification"}},
-        %{id: "wait", type: :wait, order: 2, delay_ms: 100}
+        %{
+          id: "boot",
+          type: :send_action,
+          order: 1,
+          payload: %{
+            "action" => "BootNotification",
+            "payload" => %{"chargePointVendor" => "Erdovi", "chargePointModel" => "Simulator"}
+          }
+        },
+        %{
+          id: "authorize",
+          type: :send_action,
+          order: 2,
+          payload: %{"action" => "Authorize", "payload" => %{"idTag" => "RFID-1"}}
+        },
+        %{
+          id: "start",
+          type: :send_action,
+          order: 3,
+          payload: %{
+            "action" => "StartTransaction",
+            "payload" => %{
+              "connectorId" => 1,
+              "idTag" => "RFID-1",
+              "meterStart" => 0,
+              "timestamp" => "2026-04-01T10:00:00Z"
+            }
+          }
+        },
+        %{
+          id: "meter",
+          type: :send_action,
+          order: 4,
+          payload: %{
+            "action" => "MeterValues",
+            "payload" => %{
+              "connectorId" => 1,
+              "meterValue" => [
+                %{
+                  "timestamp" => "2026-04-01T10:00:30Z",
+                  "sampledValue" => [%{"value" => "1.25"}]
+                }
+              ],
+              "transactionId" => 1
+            }
+          }
+        },
+        %{
+          id: "stop",
+          type: :send_action,
+          order: 5,
+          payload: %{
+            "action" => "StopTransaction",
+            "payload" => %{
+              "meterStop" => 100,
+              "timestamp" => "2026-04-01T10:01:00Z",
+              "transactionId" => 1
+            }
+          }
+        }
       ]
     end
 
-    defp build_scenario!(id, steps) do
-      attrs = %{
-        id: id,
-        name: "Scenario #{id}",
-        version: "1.0.0",
-        steps: steps
-      }
+    defp build_scenario!(id, steps, extra_attrs \\ %{}) do
+      attrs =
+        %{
+          id: id,
+          name: "Scenario #{id}",
+          version: "1.0.0",
+          steps: steps
+        }
+        |> Map.merge(extra_attrs)
 
       {:ok, scenario} = Scenario.new(attrs)
       scenario
@@ -41,19 +180,57 @@ defmodule OcppSimulator.Application.UseCases.RunScenarioTest do
 
     def insert(run), do: {:ok, run}
 
-    def get("run-running") do
-      {:ok, scenario} = ScenarioRepositoryStub.get("scn-ready")
+    def get("run-running"), do: {:ok, build_run!("run-running", "scn-ready", :running)}
+    def get("run-timeout"), do: {:ok, build_run!("run-timeout", "scn-timeout", :running)}
+    def get("run-delay"), do: {:ok, build_run!("run-delay", "scn-delay", :running)}
 
-      {:ok, run} = ScenarioRun.new(%{id: "run-running", scenario: scenario, state: :running})
+    def get("run-invalid-schema"),
+      do: {:ok, build_run!("run-invalid-schema", "scn-invalid-schema", :running)}
 
-      {:ok, run}
-    end
+    def get("run-invalid-transition"),
+      do: {:ok, build_run!("run-invalid-transition", "scn-invalid-transition", :running)}
+
+    def get("run-variable-default"),
+      do:
+        {:ok,
+         build_run!(
+           "run-variable-default",
+           "scn-variable-default",
+           :running,
+           %{"source" => "test", "variables" => %{"token" => "run-token"}}
+         )}
+
+    def get("run-variable-order"),
+      do:
+        {:ok,
+         build_run!(
+           "run-variable-order",
+           "scn-variable-order",
+           :running,
+           %{"source" => "test", "variables" => %{"token" => "run-token"}}
+         )}
+
+    def get("run-canceled"), do: {:ok, build_run!("run-canceled", "scn-ready", :canceled)}
 
     def get(_id), do: {:error, :not_found}
 
     def update_state(run_id, state, metadata) do
       {:ok, run} = get(run_id)
       {:ok, %{run | state: state, metadata: Map.merge(run.metadata, metadata)}}
+    end
+
+    defp build_run!(run_id, scenario_id, state, metadata \\ %{"source" => "test"}) do
+      {:ok, scenario} = ScenarioRepositoryStub.get(scenario_id)
+
+      {:ok, run} =
+        ScenarioRun.new(%{
+          id: run_id,
+          scenario: scenario,
+          state: state,
+          metadata: metadata
+        })
+
+      run
     end
   end
 
@@ -97,6 +274,110 @@ defmodule OcppSimulator.Application.UseCases.RunScenarioTest do
 
     assert :scenario_has_no_steps in errors
     assert :no_enabled_steps in errors
+  end
+
+  test "execute_run/4 succeeds and persists step-level results" do
+    deps = %{
+      scenario_run_repository: ScenarioRunRepositoryStub,
+      webhook_dispatcher: WebhookDispatcherStub
+    }
+
+    assert {:ok, final_run} = RunScenario.execute_run(deps, "run-running", :system)
+    assert final_run.state == :succeeded
+    assert length(final_run.metadata.step_results) == 5
+    assert_received {:webhook_dispatched, :run_succeeded, "run-running", _metadata}
+  end
+
+  test "execute_run/4 fails when strict schema validation rejects a step payload" do
+    deps = %{
+      scenario_run_repository: ScenarioRunRepositoryStub,
+      webhook_dispatcher: WebhookDispatcherStub
+    }
+
+    assert {:ok, final_run} = RunScenario.execute_run(deps, "run-invalid-schema", :system)
+    assert final_run.state == :failed
+    assert match?({:invalid_payload, "BootNotification", _, _}, final_run.metadata.failure_reason)
+    assert_received {:webhook_dispatched, :run_failed, "run-invalid-schema", _metadata}
+  end
+
+  test "execute_run/4 fails when strict state-transition validation rejects a step sequence" do
+    deps = %{
+      scenario_run_repository: ScenarioRunRepositoryStub,
+      webhook_dispatcher: WebhookDispatcherStub
+    }
+
+    assert {:ok, final_run} = RunScenario.execute_run(deps, "run-invalid-transition", :system)
+    assert final_run.state == :failed
+    assert match?({:invalid_transition, :none, :started}, final_run.metadata.failure_reason)
+  end
+
+  test "execute_run/4 transitions run to timed_out when timeout budget is exceeded" do
+    deps = %{
+      scenario_run_repository: ScenarioRunRepositoryStub,
+      webhook_dispatcher: WebhookDispatcherStub
+    }
+
+    assert {:ok, final_run} =
+             RunScenario.execute_run(deps, "run-timeout", :system, timeout_ms: 100)
+
+    assert final_run.state == :timed_out
+    assert final_run.metadata.failure_reason == :run_timed_out
+    assert_received {:webhook_dispatched, :run_timed_out, "run-timeout", _metadata}
+  end
+
+  test "execute_run/4 uses configured scenario variable scopes as runtime allowlist" do
+    deps = %{
+      scenario_run_repository: ScenarioRunRepositoryStub,
+      webhook_dispatcher: WebhookDispatcherStub
+    }
+
+    assert {:ok, final_run} = RunScenario.execute_run(deps, "run-variable-order", :system)
+
+    resolved_payload =
+      final_run.metadata.step_results
+      |> Enum.at(0)
+      |> Map.fetch!(:payload)
+
+    assert resolved_payload["value"] == "scenario-token"
+  end
+
+  test "execute_run/4 keeps default deterministic precedence when run scope is enabled" do
+    deps = %{
+      scenario_run_repository: ScenarioRunRepositoryStub,
+      webhook_dispatcher: WebhookDispatcherStub
+    }
+
+    assert {:ok, final_run} = RunScenario.execute_run(deps, "run-variable-default", :system)
+
+    resolved_payload =
+      final_run.metadata.step_results
+      |> Enum.at(0)
+      |> Map.fetch!(:payload)
+
+    assert resolved_payload["value"] == "run-token"
+  end
+
+  test "execute_run/4 applies real step delay for wait semantics" do
+    deps = %{
+      scenario_run_repository: ScenarioRunRepositoryStub,
+      webhook_dispatcher: WebhookDispatcherStub
+    }
+
+    started_at = System.monotonic_time(:millisecond)
+    assert {:ok, final_run} = RunScenario.execute_run(deps, "run-delay", :system)
+    finished_at = System.monotonic_time(:millisecond)
+
+    assert final_run.state == :succeeded
+    assert finished_at - started_at >= 25
+  end
+
+  test "execute_run/4 exits early when run has already been canceled" do
+    deps = %{
+      scenario_run_repository: ScenarioRunRepositoryStub
+    }
+
+    assert {:error, {:run_not_executable, :canceled}} =
+             RunScenario.execute_run(deps, "run-canceled", :system)
   end
 
   test "transition_run/5 updates run state and dispatches terminal webhook event" do

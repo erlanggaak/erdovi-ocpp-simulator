@@ -94,6 +94,30 @@ Repository `list/1` and `list_history/1` queries are page-aware and bounded by d
 - filter-first enforcement by default (unfiltered scans are rejected unless explicitly allowed)
 - default sort: `timestamp desc`
 
+## Scenario Run Processing Sequence
+
+Maintainer reference sequence used by run orchestration:
+
+```text
+create_run
+-> freeze_snapshot
+-> resolve_variables
+-> execute_steps
+-> persist_step_results
+-> finalize_run
+-> trigger_webhook
+```
+
+Run lifecycle notes:
+
+- `create_run` persists state `queued` with an immutable scenario snapshot.
+- `freeze_snapshot` ensures execution uses the run snapshot, not mutable latest scenario state.
+- `resolve_variables` applies deterministic scope precedence (`scenario < run < session < step`).
+- `execute_steps` enforces step semantics, delay/loop behavior, and strict validation policy defaults.
+- `persist_step_results` updates run metadata after each executed step for timeline traceability.
+- `finalize_run` transitions state to `succeeded`, `failed`, `canceled`, or `timed_out`.
+- `trigger_webhook` dispatches terminal run events through the configured webhook dispatcher.
+
 ## Index Bootstrap
 
 At runtime, index bootstrap is started automatically when both flags are enabled:

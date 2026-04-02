@@ -16,7 +16,10 @@ defmodule OcppSimulatorWeb.Auth.LiveAuthorization do
       |> Map.get("current_role")
       |> normalize_role()
 
-    case AuthorizationPolicy.authorize(role, permission) do
+    grants = permission_grants(role)
+    socket = assign(socket, :permission_grants, grants)
+
+    case authorize(role, permission) do
       :ok ->
         {:cont, assign(socket, :current_role, role)}
 
@@ -26,6 +29,26 @@ defmodule OcppSimulatorWeb.Auth.LiveAuthorization do
          |> put_flash(:error, "Not authorized")
          |> redirect(to: "/")}
     end
+  end
+
+  @spec can?(term(), atom()) :: boolean()
+  def can?(role, permission), do: AuthorizationPolicy.allowed?(role, permission)
+
+  defp authorize(role, {:any_of, permissions}) when is_list(permissions) do
+    if Enum.any?(permissions, &AuthorizationPolicy.allowed?(role, &1)) do
+      :ok
+    else
+      {:error, :forbidden}
+    end
+  end
+
+  defp authorize(role, permission), do: AuthorizationPolicy.authorize(role, permission)
+
+  defp permission_grants(role) do
+    AuthorizationPolicy.permissions()
+    |> Enum.reduce(%{}, fn permission, acc ->
+      Map.put(acc, permission, AuthorizationPolicy.allowed?(role, permission))
+    end)
   end
 
   defp normalize_role(role) do

@@ -1,14 +1,24 @@
 defmodule OcppSimulator.Application.UseCases.RunScenario do
   @moduledoc """
-  Run lifecycle orchestration with pre-run validation and frozen snapshot persistence.
+  Run lifecycle orchestration with pre-run validation, frozen snapshot persistence,
+  and execution sequencing:
+
+  `create_run -> freeze_snapshot -> resolve_variables -> execute_steps ->
+  persist_step_results -> finalize_run -> trigger_webhook`
   """
 
   alias OcppSimulator.Application.Policies.AuthorizationPolicy
+  alias OcppSimulator.Domain.Ocpp.Message
   alias OcppSimulator.Domain.Runs.ScenarioRun
   alias OcppSimulator.Domain.Scenarios.Scenario
+  alias OcppSimulator.Domain.Scenarios.VariableResolver
+  alias OcppSimulator.Domain.Sessions.SessionStateMachine
+  alias OcppSimulator.Domain.Transactions.TransactionStateMachine
+  alias OcppSimulator.Infrastructure.Serialization.OcppJson.PayloadValidator
 
   @required_start_dependencies [:scenario_repository, :scenario_run_repository, :id_generator]
   @required_transition_dependencies [:scenario_run_repository]
+  @required_execute_dependencies [:scenario_run_repository]
   @run_states ScenarioRun.states()
 
   @allowed_transitions %{
@@ -48,6 +58,47 @@ defmodule OcppSimulator.Application.UseCases.RunScenario do
   def start_run(_dependencies, _attrs, _actor_role),
     do: {:error, {:invalid_arguments, :start_run}}
 
+  @spec execute_run(map(), String.t(), term(), keyword() | map()) ::
+          {:ok, ScenarioRun.t()} | {:error, term()}
+  def execute_run(dependencies, run_id, actor_role, opts \\ %{})
+
+  def execute_run(dependencies, run_id, actor_role, opts)
+      when is_map(dependencies) and is_binary(run_id) and run_id != "" do
+    with {:ok, deps} <- validate_dependencies(dependencies, @required_execute_dependencies),
+         :ok <- authorize_execution(actor_role),
+         {:ok, timeout_ms} <- normalize_timeout(opts),
+         {:ok, run} <- invoke(deps.scenario_run_repository, :get, [run_id]),
+         :ok <- ensure_executable_state(run.state),
+         {:ok, scenario} <- Scenario.from_snapshot(run.frozen_snapshot),
+         :ok <- ensure_pre_run_validation_passes(scenario),
+         {:ok, running_run} <- ensure_running_state(deps, run, timeout_ms),
+         {:ok, plan} <- Scenario.execution_plan(scenario),
+         {:ok, session} <- SessionStateMachine.new_session("session-#{run.id}"),
+         {:ok, transaction} <- TransactionStateMachine.new_transaction("transaction-#{run.id}"),
+         {:ok, final_run} <-
+           execute_plan(
+             deps,
+             running_run,
+             scenario,
+             plan,
+             %{
+               run_id: run.id,
+               timeout_ms: timeout_ms,
+               elapsed_ms: 0,
+               step_results: [],
+               session: session,
+               transaction: transaction,
+               run_variables: extract_run_variables(run),
+               step_variables: %{}
+             }
+           ) do
+      {:ok, final_run}
+    end
+  end
+
+  def execute_run(_dependencies, _run_id, _actor_role, _opts),
+    do: {:error, {:invalid_arguments, :execute_run}}
+
   @spec transition_run(map(), String.t(), atom() | String.t(), term(), map()) ::
           {:ok, ScenarioRun.t()} | {:error, term()}
   def transition_run(dependencies, run_id, to_state, actor_role, metadata \\ %{})
@@ -80,6 +131,377 @@ defmodule OcppSimulator.Application.UseCases.RunScenario do
     |> maybe_add_error(Enum.empty?(scenario.steps), :scenario_has_no_steps)
     |> maybe_add_error(Enum.all?(scenario.steps, &(!&1.enabled)), :no_enabled_steps)
     |> maybe_add_error(not contiguous_step_order?(scenario.steps), :non_contiguous_step_order)
+  end
+
+  defp execute_plan(deps, run, _scenario, [], context) do
+    finalize_run(deps, run.id, :succeeded, %{
+      step_results: context.step_results,
+      total_steps: length(context.step_results),
+      elapsed_ms: context.elapsed_ms,
+      execution_finished_at: DateTime.utc_now()
+    })
+  end
+
+  defp execute_plan(deps, run, scenario, [step | remaining_plan], context) do
+    with :ok <- ensure_not_canceled(deps.scenario_run_repository, run.id),
+         :ok <- ensure_timeout_not_exceeded(context, step.delay_ms),
+         {:ok, resolved_payload} <- resolve_step_payload(scenario, run, step, context),
+         {:ok, next_context, step_result} <-
+           execute_step(run, scenario, step, resolved_payload, context),
+         :ok <-
+           persist_step_result(deps.scenario_run_repository, run.id, next_context, step_result) do
+      execute_plan(deps, run, scenario, remaining_plan, next_context)
+    else
+      {:error, {:run_canceled, canceled_run}} ->
+        {:ok, canceled_run}
+
+      {:error, {:run_timed_out, elapsed_ms}} ->
+        finalize_run(deps, run.id, :timed_out, %{
+          step_results: context.step_results,
+          elapsed_ms: elapsed_ms,
+          failure_reason: :run_timed_out,
+          execution_finished_at: DateTime.utc_now()
+        })
+
+      {:error, reason} ->
+        finalize_run(deps, run.id, :failed, %{
+          step_results: context.step_results,
+          elapsed_ms: context.elapsed_ms,
+          failure_reason: reason,
+          failed_step_id: step.step_id,
+          execution_finished_at: DateTime.utc_now()
+        })
+    end
+  end
+
+  defp execute_step(run, scenario, step, resolved_payload, context) do
+    with :ok <- apply_step_delay(step.delay_ms),
+         :ok <- validate_step_schema(scenario, step, resolved_payload),
+         {:ok, next_context, transition_events} <-
+           apply_step_state_semantics(run, scenario, step, resolved_payload, context),
+         :ok <- maybe_assert_state(next_context, step, resolved_payload) do
+      started_at = DateTime.utc_now()
+      elapsed_ms = next_context.elapsed_ms + step.delay_ms
+      finished_at = DateTime.utc_now()
+
+      step_result = %{
+        step_id: step.step_id,
+        step_type: step.step_type,
+        step_order: step.step_order,
+        execution_order: step.execution_order,
+        iteration: step.iteration,
+        repeat_count: step.repeat_count,
+        delay_ms: step.delay_ms,
+        status: :succeeded,
+        payload: resolved_payload,
+        transition_events: transition_events,
+        started_at: started_at,
+        finished_at: finished_at
+      }
+
+      next_step_variables =
+        maybe_capture_set_variable(step, resolved_payload, next_context.step_variables)
+
+      {:ok,
+       %{
+         next_context
+         | elapsed_ms: elapsed_ms,
+           step_results: next_context.step_results ++ [step_result],
+           step_variables: next_step_variables
+       }, step_result}
+    end
+  end
+
+  defp apply_step_delay(delay_ms) when is_integer(delay_ms) and delay_ms > 0 do
+    Process.sleep(delay_ms)
+    :ok
+  end
+
+  defp apply_step_delay(_delay_ms), do: :ok
+
+  defp maybe_capture_set_variable(%{step_type: :set_variable}, resolved_payload, step_variables) do
+    variable_name = fetch(resolved_payload, :name)
+    variable_value = fetch(resolved_payload, :value)
+
+    if is_binary(variable_name) and variable_name != "" do
+      Map.put(step_variables, variable_name, variable_value)
+    else
+      step_variables
+    end
+  end
+
+  defp maybe_capture_set_variable(_step, _resolved_payload, step_variables), do: step_variables
+
+  defp persist_step_result(scenario_run_repository, run_id, context, step_result) do
+    with {:ok, _updated_run} <-
+           invoke(scenario_run_repository, :update_state, [
+             run_id,
+             :running,
+             %{
+               step_results: context.step_results,
+               last_step_result: step_result,
+               elapsed_ms: context.elapsed_ms
+             }
+           ]) do
+      :ok
+    end
+  end
+
+  defp apply_step_state_semantics(_run, scenario, step, resolved_payload, context) do
+    if Scenario.strict_validation?(scenario, :state_transitions) do
+      apply_strict_state_semantics(step, resolved_payload, context)
+    else
+      {:ok, context, []}
+    end
+  end
+
+  defp apply_strict_state_semantics(%{step_type: :send_action} = step, payload, context) do
+    action = fetch(payload, :action)
+
+    case action do
+      "BootNotification" ->
+        transition_session(context, :connected, step.step_id)
+
+      "Authorize" ->
+        transition_transaction(context, :authorized, step.step_id)
+
+      "StartTransaction" ->
+        transition_transaction(context, :started, step.step_id)
+
+      "MeterValues" ->
+        transition_transaction(context, :metering, step.step_id)
+
+      "StopTransaction" ->
+        transition_transaction(context, :stopped, step.step_id)
+
+      _ ->
+        {:ok, context, []}
+    end
+  end
+
+  defp apply_strict_state_semantics(_step, _payload, context), do: {:ok, context, []}
+
+  defp transition_session(context, to_state, step_id) do
+    with {:ok, session, event} <-
+           SessionStateMachine.transition(context.session, to_state, %{
+             run_id: context.run_id,
+             step_id: step_id
+           }) do
+      {:ok, %{context | session: session}, [event]}
+    end
+  end
+
+  defp transition_transaction(context, to_state, step_id) do
+    with {:ok, transaction, event} <-
+           TransactionStateMachine.transition(context.transaction, to_state, %{
+             run_id: context.run_id,
+             step_id: step_id
+           }) do
+      {:ok, %{context | transaction: transaction}, [event]}
+    end
+  end
+
+  defp maybe_assert_state(context, %{step_type: :assert_state}, payload) do
+    machine = fetch(payload, :machine)
+    expected_state = payload |> fetch(:state) |> normalize_atom_state()
+
+    with {:ok, expected_state_atom} <- expected_state,
+         :ok <- assert_machine_state(context, machine, expected_state_atom) do
+      :ok
+    end
+  end
+
+  defp maybe_assert_state(_context, _step, _payload), do: :ok
+
+  defp assert_machine_state(context, "session", expected_state) do
+    if context.session.state == expected_state do
+      :ok
+    else
+      {:error, {:state_assertion_failed, :session, expected_state, context.session.state}}
+    end
+  end
+
+  defp assert_machine_state(context, "transaction", expected_state) do
+    if context.transaction.state == expected_state do
+      :ok
+    else
+      {:error, {:state_assertion_failed, :transaction, expected_state, context.transaction.state}}
+    end
+  end
+
+  defp assert_machine_state(_context, machine, _expected_state),
+    do: {:error, {:invalid_field, :machine, machine}}
+
+  defp normalize_atom_state(state) when is_atom(state), do: {:ok, state}
+
+  defp normalize_atom_state(state) when is_binary(state) do
+    normalized_state =
+      state
+      |> String.trim()
+      |> String.downcase()
+      |> String.replace(" ", "_")
+
+    supported_states =
+      SessionStateMachine.states() ++
+        TransactionStateMachine.states()
+
+    case Enum.find(supported_states, fn candidate ->
+           Atom.to_string(candidate) == normalized_state
+         end) do
+      nil -> {:error, {:invalid_field, :state, :unsupported_state}}
+      atom_state -> {:ok, atom_state}
+    end
+  end
+
+  defp normalize_atom_state(_state),
+    do: {:error, {:invalid_field, :state, :must_be_atom_or_string}}
+
+  defp validate_step_schema(scenario, %{step_type: :send_action} = _step, payload) do
+    if Scenario.strict_validation?(scenario, :ocpp_schema) do
+      with {:ok, action} <- fetch_required_string(payload, :action),
+           {:ok, action_payload} <- extract_action_payload(payload),
+           {:ok, message} <-
+             Message.new_call("schema-validation", action, action_payload, :outbound),
+           :ok <- PayloadValidator.validate_message(message, []) do
+        :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp validate_step_schema(_scenario, _step, _payload), do: :ok
+
+  defp extract_action_payload(payload) do
+    case fetch(payload, :payload) do
+      nested_payload when is_map(nested_payload) ->
+        {:ok, nested_payload}
+
+      nil ->
+        payload
+        |> Map.drop([:action, "action", :variables, "variables"])
+        |> then(&{:ok, &1})
+
+      _ ->
+        {:error, {:invalid_field, :payload, :must_be_map}}
+    end
+  end
+
+  defp resolve_step_payload(scenario, _run, step, context) do
+    scoped_values = %{
+      scenario: scenario.variables,
+      run: context.run_variables,
+      session: %{
+        "session_state" => context.session.state,
+        "transaction_state" => context.transaction.state
+      },
+      step:
+        context.step_variables
+        |> Map.merge(optional_map(step.payload, :variables))
+    }
+
+    active_scopes =
+      scenario.variable_scopes
+      |> Enum.reduce(%{}, fn scope, acc ->
+        Map.put(acc, scope, Map.get(scoped_values, scope, %{}))
+      end)
+
+    case VariableResolver.resolve(step.payload, active_scopes) do
+      {:ok, resolved_payload} ->
+        {:ok, resolved_payload}
+
+      {:error, reason} ->
+        if Scenario.strict_validation?(scenario, :variable_resolution) do
+          {:error, {:variable_resolution_failed, reason}}
+        else
+          {:ok, step.payload}
+        end
+    end
+  end
+
+  defp ensure_running_state(_deps, %ScenarioRun{state: :running} = run, _timeout_ms),
+    do: {:ok, run}
+
+  defp ensure_running_state(deps, %ScenarioRun{state: :queued} = run, timeout_ms) do
+    transition_run(
+      deps,
+      run.id,
+      :running,
+      :system,
+      %{execution_started_at: DateTime.utc_now(), timeout_ms: timeout_ms}
+    )
+  end
+
+  defp ensure_running_state(_deps, %ScenarioRun{state: state}, _timeout_ms),
+    do: {:error, {:run_not_executable, state}}
+
+  defp finalize_run(deps, run_id, state, metadata) do
+    transition_run(deps, run_id, state, :system, metadata)
+  end
+
+  defp ensure_not_canceled(scenario_run_repository, run_id) do
+    with {:ok, run} <- invoke(scenario_run_repository, :get, [run_id]) do
+      if run.state == :canceled do
+        {:error, {:run_canceled, run}}
+      else
+        :ok
+      end
+    end
+  end
+
+  defp ensure_timeout_not_exceeded(%{timeout_ms: nil}, _step_delay_ms), do: :ok
+
+  defp ensure_timeout_not_exceeded(
+         %{timeout_ms: timeout_ms, elapsed_ms: elapsed_ms},
+         step_delay_ms
+       )
+       when is_integer(timeout_ms) do
+    projected_elapsed = elapsed_ms + step_delay_ms
+
+    if projected_elapsed > timeout_ms do
+      {:error, {:run_timed_out, projected_elapsed}}
+    else
+      :ok
+    end
+  end
+
+  defp ensure_executable_state(state) when state in [:queued, :running], do: :ok
+  defp ensure_executable_state(state), do: {:error, {:run_not_executable, state}}
+
+  defp authorize_execution(actor_role) do
+    if system_actor?(actor_role) do
+      :ok
+    else
+      AuthorizationPolicy.authorize(actor_role, :start_run)
+    end
+  end
+
+  defp normalize_timeout(opts) when is_list(opts), do: normalize_timeout(Enum.into(opts, %{}))
+  defp normalize_timeout(%{} = opts), do: normalize_timeout_value(fetch(opts, :timeout_ms))
+
+  defp normalize_timeout(_opts),
+    do: {:error, {:invalid_field, :opts, :must_be_map_or_keyword}}
+
+  defp normalize_timeout_value(nil), do: {:ok, nil}
+
+  defp normalize_timeout_value(timeout_ms) when is_integer(timeout_ms) and timeout_ms > 0,
+    do: {:ok, timeout_ms}
+
+  defp normalize_timeout_value(_timeout_ms),
+    do: {:error, {:invalid_field, :timeout_ms, :must_be_positive_integer}}
+
+  defp extract_run_variables(%ScenarioRun{} = run) do
+    case fetch(run.metadata, :variables) do
+      variables when is_map(variables) -> variables
+      _ -> %{}
+    end
+  end
+
+  defp optional_map(map, key) do
+    case fetch(map, key) do
+      value when is_map(value) -> value
+      _ -> %{}
+    end
   end
 
   defp contiguous_step_order?([]), do: true

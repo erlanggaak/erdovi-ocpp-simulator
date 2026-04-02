@@ -554,6 +554,14 @@ Integration points with existing repository:
 - `test/ocpp_simulator/infrastructure/transport/websocket/outbound_queue_test.exs` (NEW) — Backpressure, retry, and drop-behavior coverage for outbound queue dispatch.
 - `test/ocpp_simulator/infrastructure/transport/websocket/session_manager_test.exs` (NEW) — Session lifecycle, reconnect retry, correlation, and inbound remote-command flow coverage.
 - `test/ocpp_simulator/infrastructure/transport/websocket/remote_operation_handler_test.exs` (NEW) — Remote operation strategy acceptance/rejection and call-error behavior coverage.
+- `lib/ocpp_simulator/application/use_cases/scenario_editor.ex` (NEW) — Dual-mode scenario editor conversion + round-trip normalization rules.
+- `lib/ocpp_simulator/application/use_cases/starter_templates.ex` (NEW) — Starter scenario template catalog and seeding use case.
+- `lib/ocpp_simulator/application/use_cases/import_export_artifacts.ex` (NEW) — Scenario/template import-export use case boundaries.
+- `lib/ocpp_simulator_web/controllers/api/artifact_controller.ex` (NEW) — API interface boundary for scenario/template import-export and starter template seeding.
+- `test/ocpp_simulator/application/use_cases/scenario_editor_test.exs` (NEW) — Round-trip conversion and schema-safe editor normalization coverage.
+- `test/ocpp_simulator/application/use_cases/starter_templates_test.exs` (NEW) — Starter template catalog + permission-gated seeding coverage.
+- `test/ocpp_simulator/application/use_cases/import_export_artifacts_test.exs` (NEW) — Scenario/template bundle import-export behavior coverage.
+- `lib/ocpp_simulator_web/live/live_data.ex` (NEW) — Shared LiveView data helper for role checks, repository lookup, and normalized filter parsing used by Task 7 screens.
 
 ### 8. Open Questions / Concerns
 All previously listed questions are resolved in this revision.
@@ -632,42 +640,42 @@ Implement backpressure-aware outbound message handling and retry coordination in
 Implement v1 action support coverage and protocol behavior tests in `test/ocpp_simulator/` for BootNotification, Heartbeat, StatusNotification, Authorize, StartTransaction, MeterValues, StopTransaction, remote control actions, reset, availability changes, trigger message, basic configuration management, and basic fault scenarios.
 
 # Task 6 — Deliver scenario DSL, template lifecycle, and execution orchestration
-- [ ] Task 6.1
+- [x] Task 6.1
 Define schema-versioned scenario/template structures and step semantics in `lib/ocpp_simulator/domain/scenarios/scenario.ex` with explicit support for ordered steps, delays, loops, variable substitution scopes, and strict validation policy defaults.
 
-- [ ] Task 6.2
+- [x] Task 6.2
 Implement scenario run orchestration in `lib/ocpp_simulator/application/use_cases/run_scenario.ex` to handle queueing, execution, cancellation, timeout, step-level result persistence, terminal run states, and execution blocking when strict schema/state-transition validation fails.
 
-- [ ] Task 6.3
+- [x] Task 6.3
 Implement dual-mode editor round-trip rules (visual builder model <-> raw JSON) with schema-safe conversion guarantees for the same scenario definition.
 
-- [ ] Task 6.4
+- [x] Task 6.4
 Create and ship minimally OCPP-compliant starter templates for normal transaction, fault recovery, and remote-operation scenarios.
 
-- [ ] Task 6.5
+- [x] Task 6.5
 Implement import/export capabilities for templates and scenarios through application and interface boundaries so reusable artifacts can move between environments.
 
-- [ ] Task 6.6
+- [x] Task 6.6
 Clarify end-to-end run processing sequence for maintainers:
 `(pseudo-code) create_run -> freeze_snapshot -> resolve_variables -> execute_steps -> persist_step_results -> finalize_run -> trigger_webhook`
 
 # Task 7 — Build LiveView UI for management, authoring, and monitoring
-- [ ] Task 7.1
+- [x] Task 7.1
 Implement authenticated LiveView route structure and role-aware access behavior in `lib/ocpp_simulator_web/router.ex` and auth-related LiveView modules.
 
-- [ ] Task 7.2
+- [x] Task 7.2
 Implement management screens for dashboard, charge point registry, scenario library, and template library in `lib/ocpp_simulator_web/live/` with consistent filtering and state feedback.
 
-- [ ] Task 7.3
+- [x] Task 7.3
 Implement target endpoint and connection profile management UI in `lib/ocpp_simulator_web/live/target_endpoints_live.ex`, including retry policy settings and validation messages.
 
-- [ ] Task 7.4
+- [x] Task 7.4
 Implement `lib/ocpp_simulator_web/live/scenario_builder_live.ex` for dual-mode authoring (visual editor plus raw JSON editor), field-level validation, run-level validation summary, and request/response preview with correlation IDs.
 
-- [ ] Task 7.5
+- [x] Task 7.5
 Implement `lib/ocpp_simulator_web/live/live_console_live.ex` and `lib/ocpp_simulator_web/live/run_history_live.ex` to provide live timeline diagnostics, frame detail panels, error reason visibility, and historical run replay entry points.
 
-- [ ] Task 7.6
+- [x] Task 7.6
 Implement `lib/ocpp_simulator_web/live/logs_live.ex` as a dedicated logs viewer with pagination, filter-first search, and correlation-ID drill-down across run/session/message context.
 
 # Task 8 — Deliver internal API, observability, security hardening, and webhook reliability
@@ -733,3 +741,21 @@ Produce OSS documentation and governance files in `README.md`, `docs/ARCHITECTUR
 - Implemented Task `5.5` with focused protocol/transport coverage in new tests for v1 action payload validation, fault/call-error behavior, remote-operation strategy outcomes, outbound queue backpressure/retry semantics, and session lifecycle + correlation flows.
 - Validation: full test suite passes with `mix test` (`82` tests passing, `1` skipped).
 - Assumption: runtime WebSocket I/O remains adapter-driven for now (`transport adapter` behavior + default `NoopAdapter`), enabling protocol/session verification without introducing a concrete network client in this task batch.
+- Implemented Task `6.1` by extending the scenario aggregate with schema-versioned template payload helpers, explicit variable scope ordering, strict validation policy defaults, and step-type semantics checks (ordered steps, delays, loops, supported actions).
+- Implemented Task `6.2` by extending run orchestration with `execute_run/4` to process queued/running lifecycle, resolve variables per step, enforce strict schema/state-transition validation gates, persist step-level results, handle timeout/cancellation, and finalize terminal states with webhook dispatch.
+- Implemented Task `6.3` by adding dual-mode editor conversion in `ScenarioEditor` (`visual <-> raw JSON`) with round-trip normalization through domain schema validation.
+- Implemented Task `6.4` by adding a starter template catalog + seed use case that ships minimally OCPP-compliant scenario templates for normal transaction, fault recovery, and remote-operation flows.
+- Implemented Task `6.5` by adding scenario/template import-export use cases and API interface routes/controllers for export/import + starter-template seeding.
+- Implemented Task `6.6` by documenting and aligning the run-processing sequence (`create_run -> freeze_snapshot -> resolve_variables -> execute_steps -> persist_step_results -> finalize_run -> trigger_webhook`) in architecture docs and run-use-case module docs.
+- Added focused Task 6 tests for scenario semantics, execution orchestration outcomes, editor round-trip guarantees, starter template coverage, artifact import/export behavior, and API routing/authorization behavior for artifact endpoints.
+- Validation: full test suite passes with `mix test` (`104` tests passing, `1` skipped).
+- Assumption: strict OCPP schema checks in run execution are currently applied to `send_action` steps, using nested `payload` when provided (or action-level payload fields when nested payload is omitted).
+- Implemented Task `7.1` by refactoring LiveView route sessions to explicit view/manage boundaries and extending `LiveAuthorization` to assign role grants used for role-aware UI behavior.
+- Implemented Task `7.2` by replacing placeholder dashboard/registry/library LiveViews with data-backed screens (`DashboardLive`, `ChargePointsLive`, `ScenariosLive`, `TemplatesLive`) that provide consistent filter forms, result feedback, and role-aware management affordances.
+- Implemented Task `7.3` by extending `TargetEndpointsLive` with endpoint/profile filters plus managed create form validation (including retry max attempts/backoff settings and `ws://` URL validation).
+- Implemented Task `7.4` with a new `ScenarioBuilderLive` supporting visual/raw authoring mode switching, top-level field validation, run-level validation summary via domain/use-case checks, and request/response correlation preview rows.
+- Implemented Task `7.5` with new `LiveConsoleLive` and `RunHistoryLive` pages providing timeline diagnostics, frame-detail/error-reason visibility, pagination, and replay entry actions.
+- Implemented Task `7.6` with new `LogsLive` filter-first viewer enforcing search criteria before query execution, paginated result browsing, and correlation drill-down shortcuts.
+- Added focused Task 7 web routing/authorization coverage in `test/ocpp_simulator_web/router_authorization_test.exs`, including scenario-builder role gating, management-screen rendering, and monitoring route behavior.
+- Validation: full test suite passes with `mix test` (`113` tests passing, `1` skipped).
+- Assumption: until full user identity/session auth flows are implemented, `current_role` in session remains the authenticated role source for LiveView route and UI permission behavior.

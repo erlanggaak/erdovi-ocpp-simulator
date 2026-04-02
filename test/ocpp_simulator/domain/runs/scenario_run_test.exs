@@ -44,7 +44,7 @@ defmodule OcppSimulator.Domain.Runs.ScenarioRunTest do
       name: "Transaction flow",
       version: version,
       steps: [
-        %{id: "boot", type: :send_action, order: 1},
+        %{id: "boot", type: :send_action, order: 1, payload: %{"action" => "BootNotification"}},
         %{id: "heartbeat", type: :loop, order: 2}
       ]
     }
