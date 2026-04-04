@@ -82,35 +82,45 @@ defmodule OcppSimulator.Application.UseCases.RunScenario do
          {:ok, run} <- invoke(deps.scenario_run_repository, :get, [run_id]),
          :ok <- ensure_executable_state(run.state),
          {:ok, scenario} <- Scenario.from_snapshot(run.frozen_snapshot),
+         {:ok, charge_point_profile} <- maybe_load_charge_point_profile(deps, scenario),
+         {:ok, target_endpoint_profile} <- maybe_load_target_endpoint_profile(deps, scenario),
          :ok <- ensure_pre_run_validation_passes(scenario),
          {:ok, running_run} <- ensure_running_state(deps, run, timeout_ms),
          {:ok, plan} <- Scenario.execution_plan(scenario),
          {:ok, session} <- SessionStateMachine.new_session("session-#{run.id}"),
-         {:ok, transaction} <- TransactionStateMachine.new_transaction("transaction-#{run.id}"),
-         {:ok, final_run} <-
-           execute_plan(
-             deps,
-             running_run,
-             scenario,
-             plan,
-             %{
-               run_id: run.id,
-               timeout_ms: timeout_ms,
-               elapsed_ms: 0,
-               step_results: [],
-               session: session,
-               transaction: transaction,
-               run_variables: extract_run_variables(run),
-               step_variables: %{}
-             }
-           ) do
-      emit_info("scenario.run.executed", %{
-        run_id: final_run.id,
-        action: "execute_run",
-        payload: %{state: final_run.state, elapsed_ms: fetch(final_run.metadata, :elapsed_ms)}
-      })
+         {:ok, transaction} <- TransactionStateMachine.new_transaction("transaction-#{run.id}") do
+      context = %{
+        run_id: run.id,
+        timeout_ms: timeout_ms,
+        elapsed_ms: 0,
+        step_results: [],
+        session: session,
+        transaction: transaction,
+        run_variables: extract_run_variables(run),
+        step_variables: %{},
+        charge_point_profile: charge_point_profile,
+        target_endpoint_profile: target_endpoint_profile,
+        transport_gateway: fetch(deps, :transport_gateway),
+        transport_connected: false
+      }
 
-      {:ok, final_run}
+      execute_result = execute_plan(deps, running_run, scenario, plan, context)
+      _ = maybe_disconnect_transport(context)
+
+      with {:ok, final_run} <- execute_result do
+        emit_info("scenario.run.executed", %{
+          run_id: final_run.id,
+          action: "execute_run",
+          payload: %{
+            state: final_run.state,
+            elapsed_ms: fetch(final_run.metadata, :elapsed_ms),
+            failure_reason:
+              normalize_failure_reason_for_log(fetch(final_run.metadata, :failure_reason))
+          }
+        })
+
+        {:ok, final_run}
+      end
     end
   end
 
@@ -170,16 +180,21 @@ defmodule OcppSimulator.Application.UseCases.RunScenario do
     with :ok <- ensure_not_canceled(deps.scenario_run_repository, run.id),
          :ok <- ensure_timeout_not_exceeded(context, step.delay_ms),
          {:ok, resolved_payload} <- resolve_step_payload(scenario, run, step, context),
+         :ok <- log_step_started(run, step, resolved_payload, context),
          {:ok, next_context, step_result} <-
            execute_step(run, scenario, step, resolved_payload, context),
          :ok <-
-           persist_step_result(deps.scenario_run_repository, run.id, next_context, step_result) do
+           persist_step_result(deps.scenario_run_repository, run.id, next_context, step_result),
+         :ok <- log_step_succeeded(run, step, step_result, next_context) do
       execute_plan(deps, run, scenario, remaining_plan, next_context)
     else
       {:error, {:run_canceled, canceled_run}} ->
+        _ = log_step_canceled(run, step, context)
         {:ok, canceled_run}
 
       {:error, {:run_timed_out, elapsed_ms}} ->
+        _ = log_step_timeout(run, step, elapsed_ms, context)
+
         finalize_run(deps, run.id, :timed_out, %{
           step_results: context.step_results,
           elapsed_ms: elapsed_ms,
@@ -188,6 +203,8 @@ defmodule OcppSimulator.Application.UseCases.RunScenario do
         })
 
       {:error, reason} ->
+        _ = log_step_failed(run, step, reason, context)
+
         finalize_run(deps, run.id, :failed, %{
           step_results: context.step_results,
           elapsed_ms: context.elapsed_ms,
@@ -201,8 +218,9 @@ defmodule OcppSimulator.Application.UseCases.RunScenario do
   defp execute_step(run, scenario, step, resolved_payload, context) do
     with :ok <- apply_step_delay(step.delay_ms),
          :ok <- validate_step_schema(scenario, step, resolved_payload),
+         {:ok, transport_context} <- emit_transport_logs(run, step, resolved_payload, context),
          {:ok, next_context, transition_events} <-
-           apply_step_state_semantics(run, scenario, step, resolved_payload, context),
+           apply_step_state_semantics(run, scenario, step, resolved_payload, transport_context),
          :ok <- maybe_assert_state(next_context, step, resolved_payload) do
       started_at = DateTime.utc_now()
       elapsed_ms = next_context.elapsed_ms + step.delay_ms
@@ -242,6 +260,242 @@ defmodule OcppSimulator.Application.UseCases.RunScenario do
   end
 
   defp apply_step_delay(_delay_ms), do: :ok
+
+  defp emit_transport_logs(run, %{step_type: :send_action} = step, resolved_payload, context) do
+    if transport_enabled?(context) do
+      emit_real_send_action_transport_logs(run, step, resolved_payload, context)
+    else
+      emit_simulated_send_action_transport_logs(run, step, resolved_payload, context)
+    end
+  end
+
+  defp emit_transport_logs(run, %{step_type: :await_response} = step, resolved_payload, context) do
+    if transport_enabled?(context) do
+      emit_real_await_response_transport_logs(run, step, resolved_payload, context)
+    else
+      {:ok, context}
+    end
+  end
+
+  defp emit_transport_logs(_run, _step, _resolved_payload, context), do: {:ok, context}
+
+  defp emit_simulated_send_action_transport_logs(
+         run,
+         %{step_type: :send_action} = step,
+         resolved_payload,
+         context
+       ) do
+    action = fetch(resolved_payload, :action) || "unknown"
+
+    emit_info("scenario.ws.connecting", %{
+      run_id: run.id,
+      session_id: context.session.id,
+      step_id: step.step_id,
+      action: action,
+      payload: %{message: "connect to ws"}
+    })
+
+    emit_info("scenario.ws.connected", %{
+      run_id: run.id,
+      session_id: context.session.id,
+      step_id: step.step_id,
+      action: action,
+      payload: %{message: "ws connection successful"}
+    })
+
+    emit_info("protocol.outbound_sent", %{
+      run_id: run.id,
+      session_id: context.session.id,
+      step_id: step.step_id,
+      action: action,
+      payload: %{
+        message: "send action payload",
+        frame_payload: resolved_payload
+      }
+    })
+
+    emit_info("protocol.inbound_received", %{
+      run_id: run.id,
+      session_id: context.session.id,
+      step_id: step.step_id,
+      action: action,
+      payload: %{
+        message: "receive action response",
+        request_action: action,
+        response: %{"status" => "Accepted"}
+      }
+    })
+
+    {:ok, context}
+  end
+
+  defp emit_real_send_action_transport_logs(
+         run,
+         %{step_type: :send_action} = step,
+         resolved_payload,
+         context
+       ) do
+    with {:ok, action} <- fetch_required_string(resolved_payload, :action),
+         {:ok, connected_context} <- ensure_transport_connected(run, step, context, action),
+         {:ok, action_payload} <- extract_action_payload(resolved_payload),
+         {:ok, message} <-
+           Message.new_call(
+             build_message_id(connected_context.run_id, step.step_id, action),
+             action,
+             action_payload,
+             :outbound
+           ),
+         :ok <-
+           emit_info("protocol.outbound_sent", %{
+             run_id: run.id,
+             session_id: connected_context.session.id,
+             step_id: step.step_id,
+             action: action,
+             payload: %{
+               message: "send action payload",
+               frame_payload: resolved_payload
+             }
+           }),
+         {:ok, %{message: response_message}} <-
+           invoke(connected_context.transport_gateway, :send_and_await_response, [
+             connected_context.session.id,
+             message,
+             transport_timeout_ms(resolved_payload)
+           ]),
+         :ok <- ensure_no_call_error_response(action, response_message),
+         :ok <-
+           emit_info("protocol.inbound_received", %{
+             run_id: run.id,
+             session_id: connected_context.session.id,
+             step_id: step.step_id,
+             action: action,
+             payload: %{
+               message: "receive action response",
+               request_action: action,
+               response: transport_response_payload(response_message)
+             }
+           }) do
+      {:ok, connected_context}
+    else
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp emit_real_await_response_transport_logs(
+         run,
+         %{step_type: :await_response} = step,
+         resolved_payload,
+         context
+       ) do
+    with {:ok, action} <- fetch_required_string(resolved_payload, :action),
+         {:ok, connected_context} <- ensure_transport_connected(run, step, context, action),
+         {:ok, inbound_message} <-
+           invoke(connected_context.transport_gateway, :await_inbound_call, [
+             connected_context.session.id,
+             action,
+             transport_timeout_ms(resolved_payload)
+           ]),
+         :ok <-
+           emit_info("protocol.inbound_received", %{
+             run_id: run.id,
+             session_id: connected_context.session.id,
+             step_id: step.step_id,
+             action: action,
+             payload: %{
+               message: "receive inbound call",
+               request_action: action,
+               request_payload: inbound_message.payload
+             }
+           }) do
+      {:ok, connected_context}
+    else
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp ensure_transport_connected(run, step, context, action) do
+    if context.transport_connected do
+      {:ok, context}
+    else
+      with {:ok, endpoint_profile} <- fetch_target_endpoint_profile(context),
+           :ok <-
+             emit_info("scenario.ws.connecting", %{
+               run_id: run.id,
+               session_id: context.session.id,
+               step_id: step.step_id,
+               action: action,
+               payload: %{message: "connect to ws", endpoint: fetch(endpoint_profile, :url)}
+             }),
+           :ok <-
+             invoke(context.transport_gateway, :connect, [context.session.id, endpoint_profile]),
+           :ok <-
+             emit_info("scenario.ws.connected", %{
+               run_id: run.id,
+               session_id: context.session.id,
+               step_id: step.step_id,
+               action: action,
+               payload: %{message: "ws connection successful"}
+             }) do
+        {:ok, %{context | transport_connected: true}}
+      else
+        {:error, reason} ->
+          {:error, {:transport_connect_failed, reason}}
+      end
+    end
+  end
+
+  defp fetch_target_endpoint_profile(%{target_endpoint_profile: endpoint_profile})
+       when is_map(endpoint_profile),
+       do: {:ok, endpoint_profile}
+
+  defp fetch_target_endpoint_profile(_context),
+    do: {:error, {:invalid_field, :target_endpoint_id, :must_reference_existing_endpoint}}
+
+  defp transport_enabled?(%{transport_gateway: transport_gateway})
+       when is_atom(transport_gateway) and not is_nil(transport_gateway),
+       do: true
+
+  defp transport_enabled?(_context), do: false
+
+  defp transport_timeout_ms(resolved_payload) do
+    case fetch(resolved_payload, :timeout_ms) do
+      timeout_ms when is_integer(timeout_ms) and timeout_ms > 0 -> timeout_ms
+      _ -> 30_000
+    end
+  end
+
+  defp build_message_id(run_id, step_id, action) do
+    unique = System.unique_integer([:positive, :monotonic])
+    "#{run_id}-#{step_id}-#{action}-#{unique}"
+  end
+
+  defp ensure_no_call_error_response(_action, %Message{type: :call_result}), do: :ok
+
+  defp ensure_no_call_error_response(action, %Message{
+         type: :call_error,
+         error_code: error_code,
+         error_description: error_description,
+         error_details: error_details
+       }) do
+    {:error, {:ocpp_call_error, action, error_code, error_description, error_details || %{}}}
+  end
+
+  defp transport_response_payload(%Message{type: :call_result, payload: payload}), do: payload
+
+  defp transport_response_payload(%Message{
+         type: :call_error,
+         error_code: error_code,
+         error_description: error_description,
+         error_details: error_details
+       }) do
+    %{
+      "errorCode" => error_code,
+      "errorDescription" => error_description,
+      "errorDetails" => error_details || %{}
+    }
+  end
 
   defp maybe_capture_set_variable(%{step_type: :set_variable}, resolved_payload, step_variables) do
     variable_name = fetch(resolved_payload, :name)
@@ -432,16 +686,127 @@ defmodule OcppSimulator.Application.UseCases.RunScenario do
 
     case VariableResolver.resolve(step.payload, active_scopes) do
       {:ok, resolved_payload} ->
-        {:ok, resolved_payload}
+        {:ok, maybe_hydrate_boot_notification(step, resolved_payload, context)}
 
       {:error, reason} ->
         if Scenario.strict_validation?(scenario, :variable_resolution) do
           {:error, {:variable_resolution_failed, reason}}
         else
-          {:ok, step.payload}
+          {:ok, maybe_hydrate_boot_notification(step, step.payload, context)}
         end
     end
   end
+
+  defp maybe_hydrate_boot_notification(
+         %{step_type: :send_action},
+         resolved_payload,
+         %{charge_point_profile: charge_point_profile}
+       ) do
+    action = fetch(resolved_payload, :action)
+
+    if action == "BootNotification" do
+      enrich_boot_notification_payload(resolved_payload, charge_point_profile)
+    else
+      resolved_payload
+    end
+  end
+
+  defp maybe_hydrate_boot_notification(_step, resolved_payload, _context), do: resolved_payload
+
+  defp enrich_boot_notification_payload(resolved_payload, charge_point_profile)
+       when is_map(resolved_payload) and is_map(charge_point_profile) do
+    vendor = fetch(charge_point_profile, :vendor)
+    model = fetch(charge_point_profile, :model)
+
+    if present_string?(vendor) and present_string?(model) do
+      case fetch(resolved_payload, :payload) do
+        payload when is_map(payload) ->
+          enriched_payload =
+            payload
+            |> put_missing_payload_key("chargePointVendor", vendor)
+            |> put_missing_payload_key("chargePointModel", model)
+
+          Map.put(resolved_payload, "payload", enriched_payload)
+
+        _ ->
+          resolved_payload
+          |> put_missing_payload_key("chargePointVendor", vendor)
+          |> put_missing_payload_key("chargePointModel", model)
+      end
+    else
+      resolved_payload
+    end
+  end
+
+  defp enrich_boot_notification_payload(resolved_payload, _charge_point_profile),
+    do: resolved_payload
+
+  defp put_missing_payload_key(map, key, value) when is_map(map) do
+    if present_string?(payload_value(map, key)) do
+      map
+    else
+      Map.put(map, key, value)
+    end
+  end
+
+  defp payload_value(map, key) when is_map(map) and is_binary(key) do
+    Map.get(map, key) || Map.get(map, payload_atom_key(key))
+  end
+
+  defp payload_atom_key("chargePointVendor"), do: :chargePointVendor
+  defp payload_atom_key("chargePointModel"), do: :chargePointModel
+  defp payload_atom_key(_key), do: nil
+
+  defp maybe_load_charge_point_profile(
+         %{charge_point_repository: charge_point_repository},
+         %Scenario{} = scenario
+       )
+       when is_atom(charge_point_repository) do
+    case fetch(scenario.variables, :charge_point_id) do
+      charge_point_id when is_binary(charge_point_id) and charge_point_id != "" ->
+        case invoke(charge_point_repository, :get, [charge_point_id]) do
+          {:ok, charge_point} -> {:ok, charge_point}
+          _ -> {:ok, nil}
+        end
+
+      _ ->
+        {:ok, nil}
+    end
+  end
+
+  defp maybe_load_charge_point_profile(_deps, _scenario), do: {:ok, nil}
+
+  defp maybe_load_target_endpoint_profile(
+         %{target_endpoint_repository: target_endpoint_repository},
+         %Scenario{} = scenario
+       )
+       when is_atom(target_endpoint_repository) do
+    case fetch(scenario.variables, :target_endpoint_id) do
+      target_endpoint_id when is_binary(target_endpoint_id) and target_endpoint_id != "" ->
+        case invoke(target_endpoint_repository, :get, [target_endpoint_id]) do
+          {:ok, endpoint_profile} -> {:ok, endpoint_profile}
+          _ -> {:ok, nil}
+        end
+
+      _ ->
+        {:ok, nil}
+    end
+  end
+
+  defp maybe_load_target_endpoint_profile(_deps, _scenario), do: {:ok, nil}
+
+  defp maybe_disconnect_transport(%{
+         transport_gateway: transport_gateway,
+         session: %{id: session_id}
+       })
+       when is_atom(transport_gateway) and not is_nil(transport_gateway) do
+    case invoke(transport_gateway, :disconnect, [session_id]) do
+      :ok -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp maybe_disconnect_transport(_context), do: :ok
 
   defp ensure_running_state(_deps, %ScenarioRun{state: :running} = run, _timeout_ms),
     do: {:ok, run}
@@ -587,13 +952,11 @@ defmodule OcppSimulator.Application.UseCases.RunScenario do
     |> case do
       {:ok, resolved} ->
         resolved_with_optional =
-          case fetch(dependencies, :webhook_dispatcher) do
-            dispatcher when is_atom(dispatcher) ->
-              Map.put(resolved, :webhook_dispatcher, dispatcher)
-
-            _ ->
-              resolved
-          end
+          resolved
+          |> maybe_put_optional_dependency(dependencies, :webhook_dispatcher)
+          |> maybe_put_optional_dependency(dependencies, :charge_point_repository)
+          |> maybe_put_optional_dependency(dependencies, :target_endpoint_repository)
+          |> maybe_put_optional_dependency(dependencies, :transport_gateway)
 
         {:ok, resolved_with_optional}
 
@@ -746,4 +1109,95 @@ defmodule OcppSimulator.Application.UseCases.RunScenario do
     |> Map.put_new(:persist, true)
     |> Map.put_new(:run_id, fetch(payload, :run_id) || "system")
   end
+
+  defp maybe_put_optional_dependency(resolved, dependencies, key) do
+    case fetch(dependencies, key) do
+      dependency when is_atom(dependency) -> Map.put(resolved, key, dependency)
+      _ -> resolved
+    end
+  end
+
+  defp present_string?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_string?(_value), do: false
+
+  defp log_step_started(run, step, resolved_payload, context) do
+    emit_info("scenario.step.running", %{
+      run_id: run.id,
+      session_id: context.session.id,
+      step_id: step.step_id,
+      action: fetch(resolved_payload, :action),
+      payload: %{
+        execution_order: step.execution_order,
+        step_type: step.step_type,
+        delay_ms: step.delay_ms,
+        payload: resolved_payload
+      }
+    })
+
+    :ok
+  end
+
+  defp log_step_succeeded(run, step, step_result, context) do
+    emit_info("scenario.step.succeeded", %{
+      run_id: run.id,
+      session_id: context.session.id,
+      step_id: step.step_id,
+      action: fetch(step_result.payload, :action),
+      payload: %{
+        status: step_result.status,
+        elapsed_ms: context.elapsed_ms,
+        step_result: step_result
+      }
+    })
+
+    :ok
+  end
+
+  defp log_step_failed(run, step, reason, context) do
+    emit_warn("scenario.step.failed", %{
+      run_id: run.id,
+      session_id: context.session.id,
+      step_id: step.step_id,
+      action: step.payload |> fetch(:action),
+      payload: %{
+        message: "step failed",
+        reason: normalize_failure_reason_for_log(reason)
+      }
+    })
+
+    :ok
+  end
+
+  defp log_step_timeout(run, step, elapsed_ms, context) do
+    emit_warn("scenario.step.timed_out", %{
+      run_id: run.id,
+      session_id: context.session.id,
+      step_id: step.step_id,
+      action: step.payload |> fetch(:action),
+      payload: %{
+        message: "step timed out",
+        elapsed_ms: elapsed_ms,
+        run_timeout_ms: context.timeout_ms
+      }
+    })
+
+    :ok
+  end
+
+  defp log_step_canceled(run, step, context) do
+    emit_warn("scenario.step.canceled", %{
+      run_id: run.id,
+      session_id: context.session.id,
+      step_id: step.step_id,
+      action: step.payload |> fetch(:action),
+      payload: %{message: "run canceled before step completed"}
+    })
+
+    :ok
+  end
+
+  defp normalize_failure_reason_for_log(nil), do: nil
+  defp normalize_failure_reason_for_log(value) when is_binary(value), do: value
+  defp normalize_failure_reason_for_log(value) when is_atom(value), do: Atom.to_string(value)
+  defp normalize_failure_reason_for_log(value), do: inspect(value)
 end

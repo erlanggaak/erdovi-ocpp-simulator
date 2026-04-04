@@ -11,14 +11,21 @@ defmodule OcppSimulator.Infrastructure.Serialization.OcppJsonTest do
      %{"connectorId" => 1, "status" => "Available", "errorCode" => "NoError"}},
     {"Authorize", %{"idTag" => "AABBCC"}},
     {"StartTransaction",
-     %{"connectorId" => 1, "idTag" => "AABBCC", "meterStart" => 10, "timestamp" => "2026-04-02T05:00:00Z"}},
+     %{
+       "connectorId" => 1,
+       "idTag" => "AABBCC",
+       "meterStart" => 10,
+       "timestamp" => "2026-04-02T05:00:00Z"
+     }},
     {"MeterValues",
      %{
        "connectorId" => 1,
        "meterValue" => [
          %{
            "timestamp" => "2026-04-02T05:01:00Z",
-           "sampledValue" => [%{"value" => "42.0", "measurand" => "Energy.Active.Import.Register"}]
+           "sampledValue" => [
+             %{"value" => "42.0", "measurand" => "Energy.Active.Import.Register"}
+           ]
          }
        ]
      }},
@@ -28,9 +35,17 @@ defmodule OcppSimulator.Infrastructure.Serialization.OcppJsonTest do
     {"RemoteStopTransaction", %{"transactionId" => 99}},
     {"Reset", %{"type" => "Hard"}},
     {"ChangeAvailability", %{"connectorId" => 1, "type" => "Inoperative"}},
+    {"CancelReservation", %{"reservationId" => 1001}},
     {"TriggerMessage", %{"requestedMessage" => "Heartbeat"}},
     {"ChangeConfiguration", %{"key" => "MeterValueSampleInterval", "value" => "60"}},
-    {"GetConfiguration", %{"key" => ["HeartbeatInterval"]}}
+    {"GetConfiguration", %{"key" => ["HeartbeatInterval"]}},
+    {"ClearCache", %{}},
+    {"UnlockConnector", %{"connectorId" => 1}},
+    {"UpdateFirmware",
+     %{
+       "location" => "https://example.com/fw-v2.bin",
+       "retrieveDate" => "2026-04-02T06:00:00Z"
+     }}
   ]
 
   test "encodes and decodes supported OCPP v1 call actions" do
@@ -76,6 +91,39 @@ defmodule OcppSimulator.Infrastructure.Serialization.OcppJsonTest do
     assert {:error, {:unsupported_action, "UnknownAction"}} = OcppJson.encode(message)
   end
 
+  test "rejects payload that exceeds schema maxLength" do
+    {:ok, message} =
+      Message.new_call(
+        "msg-authorize-too-long",
+        "Authorize",
+        %{"idTag" => String.duplicate("A", 21)},
+        :outbound
+      )
+
+    assert {:error,
+            {:invalid_payload, "Authorize", :invalid_field_type, "idTag",
+             %{type: "string", maxLength: 20}}} = OcppJson.encode(message)
+  end
+
+  test "rejects payload with invalid date-time format" do
+    {:ok, message} =
+      Message.new_call(
+        "msg-invalid-time",
+        "StartTransaction",
+        %{
+          "connectorId" => 1,
+          "idTag" => "AABBCC",
+          "meterStart" => 10,
+          "timestamp" => "2026-04-02 05:00:00"
+        },
+        :outbound
+      )
+
+    assert {:error,
+            {:invalid_payload, "StartTransaction", :invalid_field_type, "timestamp",
+             %{type: "string", format: "date-time"}}} = OcppJson.encode(message)
+  end
+
   test "supports call error frames for basic fault scenarios" do
     {:ok, message} =
       Message.new_call_error(
@@ -110,7 +158,9 @@ defmodule OcppSimulator.Infrastructure.Serialization.OcppJsonTest do
         :outbound
       )
 
-    assert {:error, {:invalid_payload, "MeterValues", :invalid_field_type, "meterValue", _descriptor}} =
+    assert {:error,
+            {:invalid_payload, "MeterValues", :missing_required_keys,
+             ["meterValue[0].sampledValue[0].value"]}} =
              OcppJson.encode(meter_values)
   end
 

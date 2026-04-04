@@ -22,6 +22,10 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.DriverClient do
     do: Mongo.update_one(topology, collection, filter, update, opts)
 
   @impl true
+  def delete_one(topology, collection, filter, opts),
+    do: Mongo.delete_one(topology, collection, filter, opts)
+
+  @impl true
   def count_documents(topology, collection, filter, opts),
     do: Mongo.count_documents(topology, collection, filter, opts)
 

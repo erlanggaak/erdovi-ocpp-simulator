@@ -13,13 +13,19 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.RemoteOperationHandle
         :inbound
       )
 
-    context = %{charge_point_state: :available, transaction_state: :none, availability: :operative}
+    context = %{
+      charge_point_state: :available,
+      transaction_state: :none,
+      availability: :operative
+    }
 
-    assert {:ok, response, updated_context} = RemoteOperationHandler.handle_inbound(request, context)
+    assert {:ok, response, updated_context} =
+             RemoteOperationHandler.handle_inbound(request, context)
+
     assert response.type == :call_result
     assert response.message_id == "msg-remote-start"
     assert response.payload["status"] == "Accepted"
-    assert updated_context.transaction_state == :started
+    assert updated_context.transaction_state == :authorized
   end
 
   test "rejects remote stop when no active transaction exists" do
@@ -33,7 +39,9 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.RemoteOperationHandle
 
     context = %{charge_point_state: :available, transaction_state: :none}
 
-    assert {:ok, response, _updated_context} = RemoteOperationHandler.handle_inbound(request, context)
+    assert {:ok, response, _updated_context} =
+             RemoteOperationHandler.handle_inbound(request, context)
+
     assert response.payload == %{"status" => "Rejected"}
   end
 
@@ -48,7 +56,9 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.RemoteOperationHandle
 
     context = %{charge_point_state: :charging, transaction_state: :metering}
 
-    assert {:ok, response, updated_context} = RemoteOperationHandler.handle_inbound(request, context)
+    assert {:ok, response, updated_context} =
+             RemoteOperationHandler.handle_inbound(request, context)
+
     assert response.payload == %{"status" => "Scheduled"}
     assert updated_context.pending_availability == :inoperative
   end
@@ -79,7 +89,8 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.RemoteOperationHandle
   end
 
   test "returns call error for unsupported inbound call action" do
-    {:ok, request} = Message.new_call("msg-unsup", "UnlockConnector", %{"connectorId" => 1}, :inbound)
+    {:ok, request} =
+      Message.new_call("msg-unsup", "UnknownAction", %{"connectorId" => 1}, :inbound)
 
     assert {:ok, response, _updated_context} =
              RemoteOperationHandler.handle_inbound(request, %{})

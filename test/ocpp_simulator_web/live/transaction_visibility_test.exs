@@ -87,15 +87,14 @@ defmodule OcppSimulatorWeb.Live.TransactionVisibilityTest do
         "scn-invalid-transition",
         [
           %{
-            id: "start",
+            id: "stop",
             type: :send_action,
             order: 1,
             payload: %{
-              "action" => "StartTransaction",
+              "action" => "StopTransaction",
               "payload" => %{
-                "connectorId" => 1,
-                "idTag" => "RFID-1",
-                "meterStart" => 0,
+                "transactionId" => 1,
+                "meterStop" => 10,
                 "timestamp" => "2026-04-01T10:00:00Z"
               }
             }
@@ -431,7 +430,7 @@ defmodule OcppSimulatorWeb.Live.TransactionVisibilityTest do
              RunScenario.execute_run(dependencies, queued_run.id, :system)
 
     assert failed_run.state == :failed
-    assert match?({:invalid_transition, :none, :started}, failed_run.metadata.failure_reason)
+    assert match?({:invalid_transition, :none, :stopped}, failed_run.metadata.failure_reason)
     assert {:ok, stored_failed_run} = ScenarioRunRepositoryStub.get(queued_run.id)
     assert stored_failed_run.state == :failed
 

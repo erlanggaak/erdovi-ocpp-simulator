@@ -10,6 +10,20 @@ defmodule OcppSimulatorWeb.Endpoint do
 
   socket("/live", Phoenix.LiveView.Socket, websocket: [connect_info: [session: @session_options]])
 
+  plug(Plug.Static,
+    at: "/vendor/phoenix",
+    from: {:phoenix, "priv/static"},
+    gzip: false,
+    only: ~w(phoenix.js phoenix.min.js)
+  )
+
+  plug(Plug.Static,
+    at: "/vendor/phoenix_live_view",
+    from: {:phoenix_live_view, "priv/static"},
+    gzip: false,
+    only: ~w(phoenix_live_view.js phoenix_live_view.min.js)
+  )
+
   plug(Plug.RequestId)
   plug(Plug.Telemetry, event_prefix: [:phoenix, :endpoint])
 

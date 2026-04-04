@@ -38,8 +38,8 @@ defmodule OcppSimulator.Domain.Transactions.TransactionStateMachineTest do
   test "transition/3 rejects invalid transaction transitions" do
     {:ok, tx} = TransactionStateMachine.new_transaction("tx-2")
 
-    assert {:error, {:invalid_transition, :none, :started}} =
-             TransactionStateMachine.transition(tx, :started, %{run_id: "run-1"})
+    assert {:error, {:invalid_transition, :none, :stopped}} =
+             TransactionStateMachine.transition(tx, :stopped, %{run_id: "run-1"})
   end
 
   test "transition/3 returns error instead of raising for unknown current state" do

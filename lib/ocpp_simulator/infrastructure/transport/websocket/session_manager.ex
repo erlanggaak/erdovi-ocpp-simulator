@@ -22,6 +22,7 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
   @default_max_queue_size 200
   @default_max_in_flight 8
   @default_max_queue_retry_attempts 3
+  @default_await_timeout_ms 30_000
 
   defmodule SessionEntry do
     @moduledoc false
@@ -36,7 +37,10 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
       :reconnect_attempt,
       :max_reconnect_attempts,
       :auto_reconnect,
-      :remote_context
+      :remote_context,
+      :response_waiters,
+      :inbound_waiters,
+      :inbound_backlog
     ]
     defstruct [
       :id,
@@ -49,7 +53,10 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
       :max_reconnect_attempts,
       :auto_reconnect,
       :last_error,
-      :remote_context
+      :remote_context,
+      :response_waiters,
+      :inbound_waiters,
+      :inbound_backlog
     ]
   end
 
@@ -101,6 +108,26 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
   @impl OcppSimulator.Application.Contracts.TransportGateway
   def send_message(session_id, %Message{} = message) when is_binary(session_id) do
     GenServer.call(__MODULE__, {:send_message, session_id, message})
+  end
+
+  @impl OcppSimulator.Application.Contracts.TransportGateway
+  def send_and_await_response(
+        session_id,
+        %Message{} = message,
+        timeout_ms \\ @default_await_timeout_ms
+      )
+      when is_binary(session_id) do
+    GenServer.call(
+      __MODULE__,
+      {:send_and_await_response, session_id, message, timeout_ms},
+      :infinity
+    )
+  end
+
+  @impl OcppSimulator.Application.Contracts.TransportGateway
+  def await_inbound_call(session_id, action, timeout_ms \\ @default_await_timeout_ms)
+      when is_binary(session_id) and is_binary(action) do
+    GenServer.call(__MODULE__, {:await_inbound_call, session_id, action, timeout_ms}, :infinity)
   end
 
   @spec reconnect(String.t(), term()) :: :ok | {:error, term()}
@@ -242,8 +269,11 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
         _ = maybe_stop_queue(entry.queue_pid)
         adapter_result = state.adapter.disconnect(session_id, reason)
 
+        {entry_without_waiters, _released} =
+          release_all_waiters(entry, {:session_disconnected, reason})
+
         updated_entry =
-          entry
+          entry_without_waiters
           |> Map.put(:queue_pid, nil)
           |> Map.put(:auto_reconnect, false)
           |> Map.put(:reconnect_attempt, 0)
@@ -285,38 +315,76 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
   end
 
   def handle_call({:send_message, session_id, message}, _from, %State{} = state) do
-    with {:ok, entry} <- fetch_entry(state, session_id),
-         :ok <- ensure_connected(entry),
-         {:ok, queue_pid, entry_with_queue} <- ensure_queue(entry, state),
-         {:ok, outbound_message} <- ensure_outbound_message(message),
-         {:ok, tracked_entry} <- track_outbound_message(entry_with_queue, outbound_message),
-         :ok <- OutboundQueue.enqueue(queue_pid, outbound_message) do
-      updated_entry =
-        tracked_entry
-        |> transition_session(:active, %{
-          event: "send_message",
-          message_id: outbound_message.message_id
-        })
-        |> Map.put(:last_error, nil)
+    case queue_outbound_message(state, session_id, message) do
+      {:ok, updated_state, _outbound_message} ->
+        {:reply, :ok, updated_state}
 
-      StructuredLogger.info("protocol.outbound_queued", %{
-        persist: true,
-        session_id: session_id,
-        message_id: outbound_message.message_id,
-        action: outbound_message.action,
-        event: "send_message"
-      })
+      {:error, updated_state, reason} ->
+        {:reply, {:error, reason}, updated_state}
+    end
+  end
 
-      {:reply, :ok, put_entry(state, updated_entry)}
+  def handle_call(
+        {:send_and_await_response, session_id, message, timeout_ms},
+        from,
+        %State{} = state
+      ) do
+    with :ok <- ensure_positive_timeout(timeout_ms) do
+      case queue_outbound_message(state, session_id, message) do
+        {:ok, queued_state, outbound_message} ->
+          with {:ok, queued_entry} <- fetch_entry(queued_state, session_id),
+               {:ok, waiter, waiting_entry} <-
+                 register_response_waiter(
+                   queued_entry,
+                   outbound_message.message_id,
+                   from,
+                   timeout_ms
+                 ) do
+            next_state = put_entry(queued_state, waiting_entry)
+
+            StructuredLogger.info("protocol.await_response_started", %{
+              persist: true,
+              session_id: session_id,
+              message_id: outbound_message.message_id,
+              action: outbound_message.action,
+              timeout_ms: timeout_ms,
+              waiter_token: inspect(waiter.token)
+            })
+
+            {:noreply, next_state}
+          else
+            {:error, reason} ->
+              {:reply, {:error, reason}, queued_state}
+          end
+
+        {:error, updated_state, reason} ->
+          {:reply, {:error, reason}, updated_state}
+      end
     else
       {:error, reason} ->
-        StructuredLogger.warn("protocol.outbound_rejected", %{
-          persist: true,
-          session_id: session_id,
-          event: "send_message_rejected",
-          reason: inspect(reason)
-        })
+        {:reply, {:error, reason}, state}
+    end
+  end
 
+  def handle_call({:await_inbound_call, session_id, action, timeout_ms}, from, %State{} = state) do
+    with :ok <- ensure_positive_timeout(timeout_ms),
+         {:ok, entry} <- fetch_entry(state, session_id),
+         :ok <- ensure_connected(entry) do
+      case consume_inbound_backlog(entry, action) do
+        {:ok, inbound_message, updated_entry} ->
+          {:reply, {:ok, inbound_message}, put_entry(state, updated_entry)}
+
+        {:empty, without_backlog_entry} ->
+          with {:ok, _waiter, waiting_entry} <-
+                 register_inbound_waiter(without_backlog_entry, action, from, timeout_ms) do
+            {:noreply, put_entry(state, waiting_entry)}
+          else
+            {:error, reason} ->
+              {:reply, {:error, reason}, state}
+          end
+      end
+    else
+      {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
   end
@@ -335,6 +403,9 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
               |> Map.put(:remote_context, updated_context)
               |> transition_session(:active, %{event: "inbound_call", action: message.action})
 
+            {entry_after_waiters, _notify_result} =
+              notify_or_buffer_inbound_call(updated_entry, message)
+
             StructuredLogger.info("protocol.inbound_call", %{
               persist: true,
               session_id: session_id,
@@ -344,7 +415,7 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
             })
 
             reply = %{message: message, response: response}
-            {:reply, {:ok, reply}, put_entry(state, updated_entry)}
+            {:reply, {:ok, reply}, put_entry(state, entry_after_waiters)}
           else
             {:error, reason} ->
               StructuredLogger.warn("protocol.inbound_call_failed", %{
@@ -368,6 +439,9 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
                  PayloadValidator.validate_message(message, request_action: event.request_action) do
             updated_entry = %{entry_with_queue | correlation_policy: policy, last_error: nil}
 
+            {entry_after_waiters, _notify_result} =
+              notify_response_waiter(updated_entry, message, event)
+
             StructuredLogger.info("protocol.inbound_response", %{
               persist: true,
               session_id: session_id,
@@ -377,7 +451,7 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
             })
 
             reply = %{message: message, correlation_event: event}
-            {:reply, {:ok, reply}, put_entry(state, updated_entry)}
+            {:reply, {:ok, reply}, put_entry(state, entry_after_waiters)}
           else
             {:error, reason} ->
               StructuredLogger.warn("protocol.inbound_response_failed", %{
@@ -441,6 +515,53 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
       end)
 
     {:reply, expired_events, %{state | sessions: updated_sessions}}
+  end
+
+  @impl true
+  def handle_info(
+        {:response_wait_timeout, session_id, message_id, token, timeout_ms},
+        %State{} = state
+      ) do
+    case fetch_entry(state, session_id) do
+      {:ok, entry} ->
+        {updated_entry, reply_result} =
+          pop_response_waiter(entry, message_id, token)
+
+        case reply_result do
+          {:ok, waiter} ->
+            GenServer.reply(waiter.from, {:error, {:response_timeout, message_id, timeout_ms}})
+            {:noreply, put_entry(state, updated_entry)}
+
+          :none ->
+            {:noreply, state}
+        end
+
+      {:error, :not_found} ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info(
+        {:await_inbound_timeout, session_id, action, token, timeout_ms},
+        %State{} = state
+      ) do
+    case fetch_entry(state, session_id) do
+      {:ok, entry} ->
+        {updated_entry, reply_result} =
+          pop_inbound_waiter(entry, action, token)
+
+        case reply_result do
+          {:ok, waiter} ->
+            GenServer.reply(waiter.from, {:error, {:await_timeout, action, timeout_ms}})
+            {:noreply, put_entry(state, updated_entry)}
+
+          :none ->
+            {:noreply, state}
+        end
+
+      {:error, :not_found} ->
+        {:noreply, state}
+    end
   end
 
   @impl true
@@ -526,10 +647,203 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
          max_reconnect_attempts: max_reconnect_attempts,
          auto_reconnect: true,
          last_error: nil,
-         remote_context: %{}
+         remote_context: %{},
+         response_waiters: %{},
+         inbound_waiters: %{},
+         inbound_backlog: %{}
        }}
     end
   end
+
+  defp queue_outbound_message(%State{} = state, session_id, message) do
+    with {:ok, entry} <- fetch_entry(state, session_id),
+         :ok <- ensure_connected(entry),
+         {:ok, queue_pid, entry_with_queue} <- ensure_queue(entry, state),
+         {:ok, outbound_message} <- ensure_outbound_message(message),
+         {:ok, tracked_entry} <- track_outbound_message(entry_with_queue, outbound_message),
+         :ok <- OutboundQueue.enqueue(queue_pid, outbound_message) do
+      updated_entry =
+        tracked_entry
+        |> transition_session(:active, %{
+          event: "send_message",
+          message_id: outbound_message.message_id
+        })
+        |> Map.put(:last_error, nil)
+
+      StructuredLogger.info("protocol.outbound_queued", %{
+        persist: true,
+        session_id: session_id,
+        message_id: outbound_message.message_id,
+        action: outbound_message.action,
+        event: "send_message"
+      })
+
+      {:ok, put_entry(state, updated_entry), outbound_message}
+    else
+      {:error, reason} ->
+        StructuredLogger.warn("protocol.outbound_rejected", %{
+          persist: true,
+          session_id: session_id,
+          event: "send_message_rejected",
+          reason: inspect(reason)
+        })
+
+        {:error, state, reason}
+    end
+  end
+
+  defp ensure_positive_timeout(timeout_ms) when is_integer(timeout_ms) and timeout_ms > 0, do: :ok
+
+  defp ensure_positive_timeout(_timeout_ms),
+    do: {:error, {:invalid_field, :timeout_ms, :must_be_positive_integer}}
+
+  defp register_response_waiter(%SessionEntry{} = entry, message_id, from, timeout_ms)
+       when is_binary(message_id) do
+    if Map.has_key?(entry.response_waiters, message_id) do
+      {:error, {:duplicate_response_waiter, message_id}}
+    else
+      token = make_ref()
+
+      timer_ref =
+        Process.send_after(
+          self(),
+          {:response_wait_timeout, entry.id, message_id, token, timeout_ms},
+          timeout_ms
+        )
+
+      waiter = %{from: from, timer_ref: timer_ref, token: token}
+
+      {:ok, waiter,
+       %{entry | response_waiters: Map.put(entry.response_waiters, message_id, waiter)}}
+    end
+  end
+
+  defp register_inbound_waiter(%SessionEntry{} = entry, action, from, timeout_ms)
+       when is_binary(action) do
+    token = make_ref()
+
+    timer_ref =
+      Process.send_after(
+        self(),
+        {:await_inbound_timeout, entry.id, action, token, timeout_ms},
+        timeout_ms
+      )
+
+    waiter = %{from: from, timer_ref: timer_ref, token: token}
+    updated_waiters = Map.update(entry.inbound_waiters, action, [waiter], &(&1 ++ [waiter]))
+    {:ok, waiter, %{entry | inbound_waiters: updated_waiters}}
+  end
+
+  defp consume_inbound_backlog(%SessionEntry{} = entry, action) when is_binary(action) do
+    case Map.get(entry.inbound_backlog, action, []) do
+      [message | remaining] ->
+        updated_backlog =
+          if remaining == [],
+            do: Map.delete(entry.inbound_backlog, action),
+            else: Map.put(entry.inbound_backlog, action, remaining)
+
+        {:ok, message, %{entry | inbound_backlog: updated_backlog}}
+
+      [] ->
+        {:empty, entry}
+    end
+  end
+
+  defp notify_response_waiter(%SessionEntry{} = entry, %Message{} = message, event) do
+    case Map.pop(entry.response_waiters, message.message_id) do
+      {nil, _remaining_waiters} ->
+        {entry, :no_waiter}
+
+      {waiter, remaining_waiters} ->
+        _ = cancel_waiter_timer(waiter.timer_ref)
+        GenServer.reply(waiter.from, {:ok, %{message: message, correlation_event: event}})
+        {%{entry | response_waiters: remaining_waiters}, :replied}
+    end
+  end
+
+  defp notify_or_buffer_inbound_call(%SessionEntry{} = entry, %Message{action: action} = message)
+       when is_binary(action) do
+    case Map.get(entry.inbound_waiters, action, []) do
+      [waiter | remaining_waiters] ->
+        _ = cancel_waiter_timer(waiter.timer_ref)
+        GenServer.reply(waiter.from, {:ok, message})
+
+        updated_inbound_waiters =
+          if remaining_waiters == [],
+            do: Map.delete(entry.inbound_waiters, action),
+            else: Map.put(entry.inbound_waiters, action, remaining_waiters)
+
+        {%{entry | inbound_waiters: updated_inbound_waiters}, :replied}
+
+      [] ->
+        updated_backlog = Map.update(entry.inbound_backlog, action, [message], &(&1 ++ [message]))
+        {%{entry | inbound_backlog: updated_backlog}, :buffered}
+    end
+  end
+
+  defp notify_or_buffer_inbound_call(%SessionEntry{} = entry, _message), do: {entry, :ignored}
+
+  defp pop_response_waiter(%SessionEntry{} = entry, message_id, token)
+       when is_binary(message_id) do
+    case Map.get(entry.response_waiters, message_id) do
+      %{token: ^token} = waiter ->
+        remaining = Map.delete(entry.response_waiters, message_id)
+        {%{entry | response_waiters: remaining}, {:ok, waiter}}
+
+      _ ->
+        {entry, :none}
+    end
+  end
+
+  defp pop_inbound_waiter(%SessionEntry{} = entry, action, token) when is_binary(action) do
+    case Map.get(entry.inbound_waiters, action, []) do
+      waiters when is_list(waiters) ->
+        matched = Enum.filter(waiters, fn waiter -> waiter.token == token end)
+
+        case matched do
+          [matched_waiter | _] ->
+            remaining_waiters =
+              waiters
+              |> Enum.reject(fn waiter -> waiter.token == token end)
+
+            updated_waiters =
+              if remaining_waiters == [],
+                do: Map.delete(entry.inbound_waiters, action),
+                else: Map.put(entry.inbound_waiters, action, remaining_waiters)
+
+            {%{entry | inbound_waiters: updated_waiters}, {:ok, matched_waiter}}
+
+          [] ->
+            {entry, :none}
+        end
+    end
+  end
+
+  defp release_all_waiters(%SessionEntry{} = entry, reason) do
+    response_waiters = Map.values(entry.response_waiters)
+
+    inbound_waiters =
+      entry.inbound_waiters
+      |> Map.values()
+      |> List.flatten()
+
+    all_waiters = response_waiters ++ inbound_waiters
+
+    Enum.each(all_waiters, fn waiter ->
+      _ = cancel_waiter_timer(waiter.timer_ref)
+      GenServer.reply(waiter.from, {:error, reason})
+    end)
+
+    {%{entry | response_waiters: %{}, inbound_waiters: %{}, inbound_backlog: %{}},
+     length(all_waiters)}
+  end
+
+  defp cancel_waiter_timer(timer_ref) when is_reference(timer_ref) do
+    Process.cancel_timer(timer_ref, async: true, info: false)
+    :ok
+  end
+
+  defp cancel_waiter_timer(_timer_ref), do: :ok
 
   defp ensure_endpoint_profile(endpoint_profile)
        when is_map(endpoint_profile) and map_size(endpoint_profile) > 0,
@@ -602,13 +916,30 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
   defp ensure_outbound_message(%Message{type: :call_result}),
     do: {:error, {:missing_request_action, :call_result}}
 
-  defp ensure_outbound_message(%Message{direction: nil} = message),
+  defp ensure_outbound_message(%Message{type: :call, action: action} = message) do
+    with :ok <- ensure_charge_point_outbound_action(action),
+         {:ok, normalized_direction} <- ensure_outbound_direction(message) do
+      {:ok, normalized_direction}
+    end
+  end
+
+  defp ensure_outbound_message(%Message{} = message), do: ensure_outbound_direction(message)
+
+  defp ensure_outbound_direction(%Message{direction: nil} = message),
     do: {:ok, %{message | direction: :outbound}}
 
-  defp ensure_outbound_message(%Message{direction: :outbound} = message), do: {:ok, message}
+  defp ensure_outbound_direction(%Message{direction: :outbound} = message), do: {:ok, message}
 
-  defp ensure_outbound_message(%Message{}),
+  defp ensure_outbound_direction(%Message{}),
     do: {:error, {:invalid_field, :message, :must_be_outbound_or_unspecified_direction}}
+
+  defp ensure_charge_point_outbound_action(action) when is_binary(action) do
+    if action in PayloadValidator.charge_point_initiated_actions() do
+      :ok
+    else
+      {:error, {:unsupported_outbound_action, action}}
+    end
+  end
 
   defp track_outbound_message(%SessionEntry{} = entry, %Message{type: :call} = message) do
     with {:ok, updated_registry} <-
@@ -673,6 +1004,12 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
       auto_reconnect: entry.auto_reconnect,
       last_error: entry.last_error,
       pending_correlation_count: CorrelationPolicy.pending_count(entry.correlation_policy),
+      pending_response_waiter_count: map_size(entry.response_waiters),
+      pending_inbound_waiter_count:
+        entry.inbound_waiters
+        |> Map.values()
+        |> Enum.map(&length/1)
+        |> Enum.sum(),
       queue_stats: queue_stats(entry.queue_pid),
       remote_context: entry.remote_context
     }

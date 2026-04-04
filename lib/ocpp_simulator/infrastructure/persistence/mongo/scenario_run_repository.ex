@@ -39,6 +39,10 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.ScenarioRunRepository d
   def update_state(id, state, metadata) when is_binary(id) and id != "" and is_map(metadata) do
     with {:ok, normalized_state} <- normalize_state(state),
          {:ok, existing_run} <- get(id),
+         merged_metadata <-
+           existing_run.metadata
+           |> normalize_metadata_for_storage()
+           |> Map.merge(normalize_metadata_for_storage(metadata)),
          {:ok, _result} <-
            Adapter.update_one(
              @collection,
@@ -46,7 +50,7 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.ScenarioRunRepository d
              %{
                "$set" => %{
                  "state" => normalized_state,
-                 "metadata" => Map.merge(existing_run.metadata, metadata),
+                 "metadata" => merged_metadata,
                  "updated_at" => DateTime.utc_now()
                }
              }
@@ -98,6 +102,36 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.ScenarioRunRepository d
   end
 
   def list(_filters), do: {:error, {:invalid_field, :filters, :must_be_map}}
+
+  defp normalize_metadata_for_storage(%DateTime{} = datetime), do: datetime
+  defp normalize_metadata_for_storage(%NaiveDateTime{} = naive_datetime), do: naive_datetime
+
+  defp normalize_metadata_for_storage(%_{} = struct) do
+    struct
+    |> Map.from_struct()
+    |> normalize_metadata_for_storage()
+  end
+
+  defp normalize_metadata_for_storage(value) when is_atom(value), do: Atom.to_string(value)
+
+  defp normalize_metadata_for_storage(metadata) when is_map(metadata) do
+    metadata
+    |> Enum.reduce(%{}, fn {key, value}, acc ->
+      Map.put(acc, normalize_metadata_key(key), normalize_metadata_for_storage(value))
+    end)
+  end
+
+  defp normalize_metadata_for_storage(tuple) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> Enum.map(&normalize_metadata_for_storage/1)
+
+  defp normalize_metadata_for_storage(list) when is_list(list),
+    do: Enum.map(list, &normalize_metadata_for_storage/1)
+
+  defp normalize_metadata_for_storage(value), do: value
+
+  defp normalize_metadata_key(key) when is_binary(key), do: key
+  defp normalize_metadata_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp normalize_metadata_key(key), do: to_string(key)
 
   defp normalize_state(state) when state in @run_states, do: {:ok, Atom.to_string(state)}
 

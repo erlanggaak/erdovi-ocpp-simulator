@@ -185,6 +185,24 @@ defmodule OcppSimulatorWeb.Api.RunController do
           :scenario_run_repository,
           OcppSimulator.Infrastructure.Persistence.Mongo.ScenarioRunRepository
         ),
+      charge_point_repository:
+        Application.get_env(
+          :ocpp_simulator,
+          :charge_point_repository,
+          OcppSimulator.Infrastructure.Persistence.Mongo.ChargePointRepository
+        ),
+      target_endpoint_repository:
+        Application.get_env(
+          :ocpp_simulator,
+          :target_endpoint_repository,
+          OcppSimulator.Infrastructure.Persistence.Mongo.TargetEndpointRepository
+        ),
+      transport_gateway:
+        Application.get_env(
+          :ocpp_simulator,
+          :transport_gateway,
+          OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager
+        ),
       webhook_dispatcher:
         Application.get_env(
           :ocpp_simulator,

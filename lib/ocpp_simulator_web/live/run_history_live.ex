@@ -2,6 +2,7 @@ defmodule OcppSimulatorWeb.RunHistoryLive do
   use OcppSimulatorWeb, :live_view
 
   alias OcppSimulatorWeb.Live.LiveData
+  alias OcppSimulatorWeb.Live.UITheme
 
   @impl true
   def mount(params, _session, socket) do
@@ -10,6 +11,8 @@ defmodule OcppSimulatorWeb.RunHistoryLive do
 
     {:ok,
      assign(socket,
+       current_role: socket.assigns[:current_role] || :viewer,
+       current_path: "/run-history",
        page_title: "Run History",
        filters: filters,
        entries: page.entries,
@@ -65,82 +68,101 @@ defmodule OcppSimulatorWeb.RunHistoryLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <main class="page-shell">
-      <h1><%= @page_title %></h1>
-      <p>Historical run timeline with replay entry points.</p>
+    <.page
+      title={@page_title}
+      subtitle="Pantau hasil run historis dan buka replay analysis."
+      current_path={@current_path}
+      current_role={@current_role}
+      notice={@feedback}
+      flash={@flash}
+    >
+      <section class="sim-section">
+        <.form for={%{}} as={:filters} phx-submit="filter">
+          <div class="sim-form-grid">
+            <label>
+              Scenario ID
+              <input type="text" name="filters[scenario_id]" value={@filters.scenario_id} />
+            </label>
+            <label>
+              State
+              <input type="text" name="filters[state]" value={@filters.state} />
+            </label>
+            <label>
+              Page Size
+              <input type="number" min="1" name="filters[page_size]" value={@filters.page_size} />
+            </label>
+          </div>
+          <div class="sim-actions">
+            <button type="submit">Apply Filters</button>
+          </div>
+        </.form>
+      </section>
 
-      <.form for={%{}} as={:filters} phx-submit="filter">
-        <label>
-          Scenario ID
-          <input type="text" name="filters[scenario_id]" value={@filters.scenario_id} />
-        </label>
-        <label>
-          State
-          <input type="text" name="filters[state]" value={@filters.state} />
-        </label>
-        <label>
-          Page Size
-          <input type="number" min="1" name="filters[page_size]" value={@filters.page_size} />
-        </label>
-        <button type="submit">Apply Filters</button>
-      </.form>
+      <p :if={@replay_feedback} class="sim-feedback"><%= @replay_feedback %></p>
 
-      <p :if={@feedback}><%= @feedback %></p>
-      <p :if={@replay_feedback}><%= @replay_feedback %></p>
+      <div class="sim-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Run ID</th>
+              <th>Scenario</th>
+              <th>Version</th>
+              <th>State</th>
+              <th>Created At</th>
+              <th>Error Reason</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr :for={entry <- @entries}>
+              <td><%= entry.id %></td>
+              <td><%= entry.scenario_id %></td>
+              <td><%= entry.scenario_version %></td>
+              <td><%= entry.state %></td>
+              <td><%= entry.created_at %></td>
+              <td><%= extract_failure_reason(entry.metadata) %></td>
+              <td>
+                <div class="sim-actions">
+                  <button type="button" phx-click="replay" phx-value-id={entry.id}>Replay</button>
+                  <.link navigate={~p"/live-console?run_id=#{entry.id}"} class="sim-button-link">
+                    Open Console
+                  </.link>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
-      <table>
-        <thead>
-          <tr>
-            <th>Run ID</th>
-            <th>Scenario</th>
-            <th>Version</th>
-            <th>State</th>
-            <th>Created At</th>
-            <th>Error Reason</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr :for={entry <- @entries}>
-            <td><%= entry.id %></td>
-            <td><%= entry.scenario_id %></td>
-            <td><%= entry.scenario_version %></td>
-            <td><%= entry.state %></td>
-            <td><%= entry.created_at %></td>
-            <td><%= extract_failure_reason(entry.metadata) %></td>
-            <td>
-              <button type="button" phx-click="replay" phx-value-id={entry.id}>Replay</button>
-              <.link navigate={~p"/live-console?run_id=#{entry.id}"}>Open Console</.link>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-
-      <section>
-        <p>
+      <section class="sim-section">
+        <p class="sim-muted">
           Page <%= @pagination.page %> / <%= @pagination.total_pages %> (total entries:
           <%= @pagination.total_entries %>)
         </p>
-        <button
-          type="button"
-          phx-click="paginate"
-          phx-value-page={max(@pagination.page - 1, 1)}
-          disabled={@pagination.page <= 1}
-        >
-          Previous
-        </button>
-        <button
-          type="button"
-          phx-click="paginate"
-          phx-value-page={min(@pagination.page + 1, @pagination.total_pages)}
-          disabled={@pagination.page >= @pagination.total_pages}
-        >
-          Next
-        </button>
+        <div class="sim-actions">
+          <button
+            type="button"
+            phx-click="paginate"
+            phx-value-page={max(@pagination.page - 1, 1)}
+            disabled={@pagination.page <= 1}
+          >
+            Previous
+          </button>
+          <button
+            type="button"
+            phx-click="paginate"
+            phx-value-page={min(@pagination.page + 1, @pagination.total_pages)}
+            disabled={@pagination.page >= @pagination.total_pages}
+          >
+            Next
+          </button>
+        </div>
       </section>
-    </main>
+    </.page>
     """
   end
+
+  defp page(assigns), do: UITheme.page(assigns)
 
   defp load_history(filters) do
     repository =

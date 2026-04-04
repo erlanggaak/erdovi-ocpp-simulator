@@ -17,6 +17,9 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.MongoClient do
   @callback update_one(topology(), collection(), map(), map(), keyword()) ::
               {:ok, term()} | {:error, term()}
 
+  @callback delete_one(topology(), collection(), map(), keyword()) ::
+              {:ok, term()} | {:error, term()}
+
   @callback count_documents(topology(), collection(), map(), keyword()) ::
               {:ok, non_neg_integer()} | {:error, term()}
 

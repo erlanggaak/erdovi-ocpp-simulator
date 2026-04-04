@@ -5,8 +5,8 @@ defmodule OcppSimulator.Domain.Transactions.TransactionStateMachine do
 
   @states [:none, :authorized, :started, :metering, :stopped]
   @allowed_transitions %{
-    none: [:authorized],
-    authorized: [:started, :stopped],
+    none: [:authorized, :started],
+    authorized: [:authorized, :started, :stopped],
     started: [:metering, :stopped],
     metering: [:metering, :stopped],
     stopped: []

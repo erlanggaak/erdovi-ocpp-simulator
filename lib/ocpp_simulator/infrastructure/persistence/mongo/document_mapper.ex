@@ -155,7 +155,7 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.DocumentMapper do
       "scenario_version" => run.scenario_version,
       "state" => Atom.to_string(run.state),
       "frozen_snapshot" => run.frozen_snapshot,
-      "metadata" => run.metadata,
+      "metadata" => normalize_document_map(run.metadata),
       "created_at" => run.created_at
     }
   end
@@ -452,6 +452,36 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.DocumentMapper do
   end
 
   defp normalize_datetime(_value), do: nil
+
+  defp normalize_document_map(%DateTime{} = datetime), do: datetime
+  defp normalize_document_map(%NaiveDateTime{} = naive_datetime), do: naive_datetime
+
+  defp normalize_document_map(%_{} = struct) do
+    struct
+    |> Map.from_struct()
+    |> normalize_document_map()
+  end
+
+  defp normalize_document_map(value) when is_atom(value), do: Atom.to_string(value)
+
+  defp normalize_document_map(map) when is_map(map) do
+    map
+    |> Enum.reduce(%{}, fn {key, value}, acc ->
+      Map.put(acc, normalize_document_key(key), normalize_document_map(value))
+    end)
+  end
+
+  defp normalize_document_map(tuple) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> Enum.map(&normalize_document_map/1)
+
+  defp normalize_document_map(list) when is_list(list),
+    do: Enum.map(list, &normalize_document_map/1)
+
+  defp normalize_document_map(value), do: value
+
+  defp normalize_document_key(key) when is_binary(key), do: key
+  defp normalize_document_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp normalize_document_key(key), do: to_string(key)
 
   defp fetch(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
 end

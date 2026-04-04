@@ -1,53 +1,74 @@
 defmodule OcppSimulator.Infrastructure.Serialization.OcppJson.PayloadValidator do
   @moduledoc """
-  Strict OCPP 1.6J payload validation for supported v1 actions.
+  Strict OCPP 1.6J payload validation powered by official JSON schemas.
   """
 
   alias OcppSimulator.Domain.Ocpp.Message
 
-  @id_tag_status_values ["Accepted", "Blocked", "Expired", "Invalid", "ConcurrentTx"]
+  @schema_dir Path.expand("../../../../../OCPP_1.6_documentation/schemas/json", __DIR__)
+  @schema_files @schema_dir |> Path.join("*.json") |> Path.wildcard() |> Enum.sort()
 
-  @sampled_value_schema %{
-    required: [
-      {"value", :string}
-    ],
-    optional: [
-      {"context", :string},
-      {"format", :string},
-      {"measurand", :string},
-      {"phase", :string},
-      {"location", :string},
-      {"unit", :string}
-    ]
-  }
+  for schema_path <- @schema_files do
+    @external_resource schema_path
+  end
 
-  @meter_value_entry_schema %{
-    required: [
-      {"timestamp", :string},
-      {"sampledValue", {:list, {:shape, @sampled_value_schema}}}
-    ],
-    optional: []
-  }
+  schema_pairs =
+    Enum.reduce(@schema_files, {%{}, %{}}, fn schema_path, {call_schemas, call_result_schemas} ->
+      schema =
+        schema_path
+        |> File.read!()
+        |> Jason.decode!()
 
-  @id_tag_info_schema %{
-    required: [
-      {"status", {:enum, @id_tag_status_values}}
-    ],
-    optional: [
-      {"expiryDate", :string},
-      {"parentIdTag", :string}
-    ]
-  }
+      base_name = Path.basename(schema_path, ".json")
 
-  @configuration_key_schema %{
-    required: [
-      {"key", :string},
-      {"readonly", :boolean}
-    ],
-    optional: [
-      {"value", :string}
-    ]
-  }
+      if String.ends_with?(base_name, "Response") do
+        action = String.replace_suffix(base_name, "Response", "")
+        {call_schemas, Map.put(call_result_schemas, action, schema)}
+      else
+        action = base_name
+        {Map.put(call_schemas, action, schema), call_result_schemas}
+      end
+    end)
+
+  @call_schemas elem(schema_pairs, 0)
+  @call_result_schemas elem(schema_pairs, 1)
+
+  @supported_actions Map.keys(@call_schemas) |> Enum.sort()
+
+  @charge_point_initiated_actions [
+    "Authorize",
+    "BootNotification",
+    "DataTransfer",
+    "DiagnosticsStatusNotification",
+    "FirmwareStatusNotification",
+    "Heartbeat",
+    "MeterValues",
+    "StartTransaction",
+    "StatusNotification",
+    "StopTransaction"
+  ]
+
+  @central_system_initiated_actions [
+    "CancelReservation",
+    "ChangeAvailability",
+    "ChangeConfiguration",
+    "ClearCache",
+    "ClearChargingProfile",
+    "DataTransfer",
+    "GetCompositeSchedule",
+    "GetConfiguration",
+    "GetDiagnostics",
+    "GetLocalListVersion",
+    "RemoteStartTransaction",
+    "RemoteStopTransaction",
+    "ReserveNow",
+    "Reset",
+    "SendLocalList",
+    "SetChargingProfile",
+    "TriggerMessage",
+    "UnlockConnector",
+    "UpdateFirmware"
+  ]
 
   @call_error_codes [
     "NotImplemented",
@@ -58,217 +79,19 @@ defmodule OcppSimulator.Infrastructure.Serialization.OcppJson.PayloadValidator d
     "FormationViolation",
     "PropertyConstraintViolation",
     "OccurenceConstraintViolation",
+    "OccurrenceConstraintViolation",
     "TypeConstraintViolation",
     "GenericError"
   ]
 
-  @trigger_messages [
-    "BootNotification",
-    "DiagnosticsStatusNotification",
-    "FirmwareStatusNotification",
-    "Heartbeat",
-    "MeterValues",
-    "StatusNotification"
-  ]
+  @spec supported_actions() :: [String.t()]
+  def supported_actions, do: @supported_actions
 
-  @call_schemas %{
-    "BootNotification" => %{
-      required: [
-        {"chargePointVendor", :string},
-        {"chargePointModel", :string}
-      ],
-      optional: [
-        {"chargeBoxSerialNumber", :string},
-        {"chargePointSerialNumber", :string},
-        {"firmwareVersion", :string},
-        {"iccid", :string},
-        {"imsi", :string},
-        {"meterType", :string},
-        {"meterSerialNumber", :string}
-      ]
-    },
-    "Heartbeat" => %{required: [], optional: []},
-    "StatusNotification" => %{
-      required: [
-        {"connectorId", :non_neg_integer},
-        {"status", :string},
-        {"errorCode", :string}
-      ],
-      optional: [
-        {"info", :string},
-        {"timestamp", :string},
-        {"vendorId", :string},
-        {"vendorErrorCode", :string}
-      ]
-    },
-    "Authorize" => %{
-      required: [
-        {"idTag", :string}
-      ],
-      optional: []
-    },
-    "StartTransaction" => %{
-      required: [
-        {"connectorId", :positive_integer},
-        {"idTag", :string},
-        {"meterStart", :integer},
-        {"timestamp", :string}
-      ],
-      optional: [
-        {"reservationId", :integer}
-      ]
-    },
-    "MeterValues" => %{
-      required: [
-        {"connectorId", :positive_integer},
-        {"meterValue", {:list, {:shape, @meter_value_entry_schema}}}
-      ],
-      optional: [
-        {"transactionId", :integer}
-      ]
-    },
-    "StopTransaction" => %{
-      required: [
-        {"meterStop", :integer},
-        {"timestamp", :string},
-        {"transactionId", :integer}
-      ],
-      optional: [
-        {"idTag", :string},
-        {"reason", :string},
-        {"transactionData", {:list, {:shape, @meter_value_entry_schema}}}
-      ]
-    },
-    "RemoteStartTransaction" => %{
-      required: [
-        {"idTag", :string}
-      ],
-      optional: [
-        {"connectorId", :positive_integer}
-      ]
-    },
-    "RemoteStopTransaction" => %{
-      required: [
-        {"transactionId", :integer}
-      ],
-      optional: []
-    },
-    "Reset" => %{
-      required: [
-        {"type", {:enum, ["Hard", "Soft"]}}
-      ],
-      optional: []
-    },
-    "ChangeAvailability" => %{
-      required: [
-        {"connectorId", :non_neg_integer},
-        {"type", {:enum, ["Inoperative", "Operative"]}}
-      ],
-      optional: []
-    },
-    "TriggerMessage" => %{
-      required: [
-        {"requestedMessage", {:enum, @trigger_messages}}
-      ],
-      optional: [
-        {"connectorId", :non_neg_integer}
-      ]
-    },
-    "ChangeConfiguration" => %{
-      required: [
-        {"key", :string},
-        {"value", :string}
-      ],
-      optional: []
-    },
-    "GetConfiguration" => %{
-      required: [],
-      optional: [
-        {"key", {:list, :string}}
-      ]
-    }
-  }
+  @spec charge_point_initiated_actions() :: [String.t()]
+  def charge_point_initiated_actions, do: @charge_point_initiated_actions
 
-  @call_result_schemas %{
-    "BootNotification" => %{
-      required: [
-        {"status", {:enum, ["Accepted", "Pending", "Rejected"]}},
-        {"currentTime", :string},
-        {"interval", :positive_integer}
-      ],
-      optional: []
-    },
-    "Heartbeat" => %{
-      required: [
-        {"currentTime", :string}
-      ],
-      optional: []
-    },
-    "StatusNotification" => %{required: [], optional: []},
-    "Authorize" => %{
-      required: [
-        {"idTagInfo", {:shape, @id_tag_info_schema}}
-      ],
-      optional: []
-    },
-    "StartTransaction" => %{
-      required: [
-        {"transactionId", :integer},
-        {"idTagInfo", {:shape, @id_tag_info_schema}}
-      ],
-      optional: []
-    },
-    "MeterValues" => %{required: [], optional: []},
-    "StopTransaction" => %{
-      required: [],
-      optional: [
-        {"idTagInfo", {:shape, @id_tag_info_schema}}
-      ]
-    },
-    "RemoteStartTransaction" => %{
-      required: [
-        {"status", {:enum, ["Accepted", "Rejected"]}}
-      ],
-      optional: []
-    },
-    "RemoteStopTransaction" => %{
-      required: [
-        {"status", {:enum, ["Accepted", "Rejected"]}}
-      ],
-      optional: []
-    },
-    "Reset" => %{
-      required: [
-        {"status", {:enum, ["Accepted", "Rejected"]}}
-      ],
-      optional: []
-    },
-    "ChangeAvailability" => %{
-      required: [
-        {"status", {:enum, ["Accepted", "Rejected", "Scheduled"]}}
-      ],
-      optional: []
-    },
-    "TriggerMessage" => %{
-      required: [
-        {"status", {:enum, ["Accepted", "Rejected", "NotImplemented"]}}
-      ],
-      optional: []
-    },
-    "ChangeConfiguration" => %{
-      required: [
-        {"status", {:enum, ["Accepted", "Rejected", "RebootRequired", "NotSupported"]}}
-      ],
-      optional: []
-    },
-    "GetConfiguration" => %{
-      required: [],
-      optional: [
-        {"configurationKey", {:list, {:shape, @configuration_key_schema}}},
-        {"unknownKey", {:list, :string}}
-      ]
-    }
-  }
+  @spec central_system_initiated_actions() :: [String.t()]
+  def central_system_initiated_actions, do: @central_system_initiated_actions
 
   @spec validate_message(Message.t(), keyword()) :: :ok | {:error, term()}
   def validate_message(%Message{type: :call, action: action, payload: payload}, _opts) do
@@ -330,7 +153,7 @@ defmodule OcppSimulator.Infrastructure.Serialization.OcppJson.PayloadValidator d
   end
 
   defp validate_supported_action(action) do
-    if Message.supported_action?(action) do
+    if action in @supported_actions do
       :ok
     else
       {:error, {:unsupported_action, action}}
@@ -339,63 +162,34 @@ defmodule OcppSimulator.Infrastructure.Serialization.OcppJson.PayloadValidator d
 
   defp validate_payload(payload, schema, action) do
     with :ok <- ensure_map(payload, :payload),
-         normalized <- normalize_map_keys(payload),
-         :ok <- validate_required_keys(normalized, schema.required, action),
-         :ok <- validate_unexpected_keys(normalized, schema, action),
-         :ok <- validate_types(normalized, schema, action) do
-      :ok
-    end
-  end
-
-  defp validate_required_keys(payload, required_fields, action) do
-    missing =
-      required_fields
-      |> Enum.map(&elem(&1, 0))
-      |> Enum.reject(&Map.has_key?(payload, &1))
-
-    if missing == [] do
+         normalized <- normalize_payload(payload),
+         :ok <- validate_against_schema(normalized, schema, []) do
       :ok
     else
-      {:error, {:invalid_payload, action, :missing_required_keys, Enum.sort(missing)}}
+      {:error, {:missing_required_keys, path, missing_fields}} ->
+        missing =
+          if path == [] do
+            missing_fields
+          else
+            Enum.map(missing_fields, &path_to_string(path ++ [&1]))
+          end
+
+        {:error, {:invalid_payload, action, :missing_required_keys, Enum.sort(missing)}}
+
+      {:error, {:unexpected_keys, path, unexpected_fields}} ->
+        unexpected =
+          if path == [] do
+            unexpected_fields
+          else
+            Enum.map(unexpected_fields, &path_to_string(path ++ [&1]))
+          end
+
+        {:error, {:invalid_payload, action, :unexpected_keys, Enum.sort(unexpected)}}
+
+      {:error, {:invalid_field_type, path, descriptor}} ->
+        {:error,
+         {:invalid_payload, action, :invalid_field_type, path_to_string(path), descriptor}}
     end
-  end
-
-  defp validate_unexpected_keys(payload, schema, action) do
-    allowed_keys =
-      schema.required
-      |> Kernel.++(schema.optional)
-      |> Enum.map(&elem(&1, 0))
-      |> MapSet.new()
-
-    unexpected =
-      payload
-      |> Map.keys()
-      |> Enum.reject(&MapSet.member?(allowed_keys, &1))
-      |> Enum.sort()
-
-    if unexpected == [] do
-      :ok
-    else
-      {:error, {:invalid_payload, action, :unexpected_keys, unexpected}}
-    end
-  end
-
-  defp validate_types(payload, schema, action) do
-    schema.required
-    |> Kernel.++(schema.optional)
-    |> Enum.reduce_while(:ok, fn {field, descriptor}, :ok ->
-      if Map.has_key?(payload, field) do
-        value = Map.fetch!(payload, field)
-
-        if valid_type?(value, descriptor) do
-          {:cont, :ok}
-        else
-          {:halt, {:error, {:invalid_payload, action, :invalid_field_type, field, descriptor}}}
-        end
-      else
-        {:cont, :ok}
-      end
-    end)
   end
 
   defp validate_error_code(code) do
@@ -406,50 +200,300 @@ defmodule OcppSimulator.Infrastructure.Serialization.OcppJson.PayloadValidator d
     end
   end
 
-  defp valid_type?(value, :string), do: is_binary(value) and value != ""
-  defp valid_type?(value, :integer), do: is_integer(value)
-  defp valid_type?(value, :boolean), do: is_boolean(value)
-  defp valid_type?(value, :non_neg_integer), do: is_integer(value) and value >= 0
-  defp valid_type?(value, :positive_integer), do: is_integer(value) and value > 0
-  defp valid_type?(value, :map), do: is_map(value)
-
-  defp valid_type?(value, {:enum, allowed_values}) when is_binary(value),
-    do: value in allowed_values
-
-  defp valid_type?(value, {:list, descriptor}) when is_list(value),
-    do: Enum.all?(value, &valid_type?(&1, descriptor))
-
-  defp valid_type?(value, {:shape, %{required: required, optional: optional}}) when is_map(value) do
-    normalized = normalize_map_keys(value)
-    valid_shape?(normalized, required, optional)
+  defp validate_against_schema(value, schema, path) when is_map(schema) do
+    with :ok <- validate_enum_constraint(value, schema, path),
+         :ok <- validate_typed_constraints(value, schema, path) do
+      :ok
+    end
   end
 
-  defp valid_type?(_value, _descriptor), do: false
-
-  defp valid_shape?(payload, required_fields, optional_fields) do
-    allowed_keys =
-      required_fields
-      |> Kernel.++(optional_fields)
-      |> Enum.map(&elem(&1, 0))
-      |> MapSet.new()
-
-    required_valid? =
-      Enum.all?(required_fields, fn {field, descriptor} ->
-        Map.has_key?(payload, field) and valid_type?(Map.fetch!(payload, field), descriptor)
-      end)
-
-    optional_valid? =
-      Enum.all?(optional_fields, fn {field, descriptor} ->
-        not Map.has_key?(payload, field) or valid_type?(Map.fetch!(payload, field), descriptor)
-      end)
-
-    unexpected_valid? =
-      payload
-      |> Map.keys()
-      |> Enum.all?(&MapSet.member?(allowed_keys, &1))
-
-    required_valid? and optional_valid? and unexpected_valid?
+  defp validate_against_schema(_value, _schema, path) do
+    {:error, {:invalid_field_type, path, %{schema: :invalid_schema_definition}}}
   end
+
+  defp validate_enum_constraint(value, schema, path) do
+    case Map.get(schema, "enum") do
+      enum when is_list(enum) ->
+        if value in enum do
+          :ok
+        else
+          {:error, {:invalid_field_type, path, %{enum: enum}}}
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp validate_typed_constraints(value, schema, path) do
+    case Map.get(schema, "type") do
+      nil ->
+        :ok
+
+      type when is_list(type) ->
+        validate_union_type(value, type, schema, path)
+
+      "object" ->
+        validate_object_schema(value, schema, path)
+
+      "array" ->
+        validate_array_schema(value, schema, path)
+
+      "string" ->
+        validate_string_schema(value, schema, path)
+
+      "integer" ->
+        validate_integer_schema(value, schema, path)
+
+      "number" ->
+        validate_number_schema(value, schema, path)
+
+      "boolean" ->
+        if is_boolean(value), do: :ok, else: invalid_type(path, "boolean")
+
+      "null" ->
+        if is_nil(value), do: :ok, else: invalid_type(path, "null")
+
+      other ->
+        {:error, {:invalid_field_type, path, %{type: other}}}
+    end
+  end
+
+  defp validate_union_type(value, union_types, schema, path) do
+    if Enum.any?(union_types, fn union_type -> type_matches?(value, union_type) end) do
+      :ok
+    else
+      validate_typed_constraints(value, Map.put(schema, "type", hd(union_types)), path)
+    end
+  end
+
+  defp type_matches?(value, "object"), do: is_map(value)
+  defp type_matches?(value, "array"), do: is_list(value)
+  defp type_matches?(value, "string"), do: is_binary(value)
+  defp type_matches?(value, "integer"), do: is_integer(value)
+  defp type_matches?(value, "number"), do: is_number(value)
+  defp type_matches?(value, "boolean"), do: is_boolean(value)
+  defp type_matches?(value, "null"), do: is_nil(value)
+  defp type_matches?(_value, _type), do: false
+
+  defp validate_object_schema(value, schema, path) do
+    if is_map(value) do
+      properties = Map.get(schema, "properties", %{})
+      required_fields = Map.get(schema, "required", [])
+
+      missing_fields =
+        required_fields
+        |> Enum.reject(&Map.has_key?(value, &1))
+        |> Enum.sort()
+
+      if missing_fields != [] do
+        {:error, {:missing_required_keys, path, missing_fields}}
+      else
+        with :ok <- validate_object_additional_properties(value, properties, schema, path),
+             :ok <- validate_object_defined_properties(value, properties, path) do
+          :ok
+        end
+      end
+    else
+      invalid_type(path, "object")
+    end
+  end
+
+  defp validate_object_additional_properties(value, properties, schema, path) do
+    property_keys = Map.keys(properties)
+    additional = Map.get(schema, "additionalProperties", true)
+
+    case additional do
+      false ->
+        unexpected_keys =
+          value
+          |> Map.keys()
+          |> Enum.reject(&(&1 in property_keys))
+          |> Enum.sort()
+
+        if unexpected_keys == [] do
+          :ok
+        else
+          {:error, {:unexpected_keys, path, unexpected_keys}}
+        end
+
+      true ->
+        :ok
+
+      additional_schema when is_map(additional_schema) ->
+        value
+        |> Enum.reduce_while(:ok, fn {key, nested_value}, :ok ->
+          if key in property_keys do
+            {:cont, :ok}
+          else
+            case validate_against_schema(nested_value, additional_schema, path ++ [key]) do
+              :ok -> {:cont, :ok}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
+          end
+        end)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp validate_object_defined_properties(value, properties, path) do
+    properties
+    |> Enum.reduce_while(:ok, fn {property_key, property_schema}, :ok ->
+      if Map.has_key?(value, property_key) do
+        case validate_against_schema(
+               Map.fetch!(value, property_key),
+               property_schema,
+               path ++ [property_key]
+             ) do
+          :ok -> {:cont, :ok}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      else
+        {:cont, :ok}
+      end
+    end)
+  end
+
+  defp validate_array_schema(value, schema, path) do
+    if is_list(value) do
+      case Map.get(schema, "items") do
+        nil ->
+          :ok
+
+        items_schema ->
+          value
+          |> Enum.with_index()
+          |> Enum.reduce_while(:ok, fn {item, index}, :ok ->
+            case validate_against_schema(item, items_schema, path ++ [index]) do
+              :ok -> {:cont, :ok}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
+          end)
+      end
+    else
+      invalid_type(path, "array")
+    end
+  end
+
+  defp validate_string_schema(value, schema, path) do
+    if is_binary(value) do
+      with :ok <- validate_max_length(value, schema, path),
+           :ok <- validate_string_format(value, schema, path) do
+        :ok
+      end
+    else
+      invalid_type(path, "string")
+    end
+  end
+
+  defp validate_max_length(value, schema, path) do
+    case Map.get(schema, "maxLength") do
+      max_length when is_integer(max_length) ->
+        if String.length(value) > max_length do
+          {:error, {:invalid_field_type, path, %{type: "string", maxLength: max_length}}}
+        else
+          :ok
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp validate_string_format(value, schema, path) do
+    case Map.get(schema, "format") do
+      "date-time" ->
+        if valid_iso8601_datetime?(value) do
+          :ok
+        else
+          {:error, {:invalid_field_type, path, %{type: "string", format: "date-time"}}}
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp validate_integer_schema(value, schema, path) do
+    if is_integer(value) do
+      validate_multiple_of(value, schema, path, "integer")
+    else
+      invalid_type(path, "integer")
+    end
+  end
+
+  defp validate_number_schema(value, schema, path) do
+    if is_number(value) do
+      validate_multiple_of(value, schema, path, "number")
+    else
+      invalid_type(path, "number")
+    end
+  end
+
+  defp validate_multiple_of(value, schema, path, number_type) do
+    case Map.get(schema, "multipleOf") do
+      divisor when is_number(divisor) and divisor != 0 ->
+        if multiple_of?(value, divisor) do
+          :ok
+        else
+          {:error, {:invalid_field_type, path, %{type: number_type, multipleOf: divisor}}}
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp multiple_of?(value, divisor) do
+    quotient = value / divisor
+    rounded = Float.round(quotient)
+    abs(quotient - rounded) < 1.0e-9
+  end
+
+  defp invalid_type(path, expected_type) do
+    {:error, {:invalid_field_type, path, %{type: expected_type}}}
+  end
+
+  defp valid_iso8601_datetime?(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, _datetime, _offset} -> true
+      _ -> false
+    end
+  end
+
+  defp valid_iso8601_datetime?(_value), do: false
+
+  defp path_to_string(path) when is_list(path) do
+    case Enum.reduce(path, "", &append_path_segment/2) do
+      "" -> "payload"
+      built -> built
+    end
+  end
+
+  defp append_path_segment(segment, acc) when is_integer(segment) do
+    "#{acc}[#{segment}]"
+  end
+
+  defp append_path_segment(segment, ""), do: to_string(segment)
+  defp append_path_segment(segment, acc), do: "#{acc}.#{segment}"
+
+  defp normalize_payload(value) when is_map(value) do
+    Enum.reduce(value, %{}, fn {key, nested_value}, acc ->
+      normalized_key =
+        cond do
+          is_atom(key) -> Atom.to_string(key)
+          is_binary(key) -> key
+          true -> to_string(key)
+        end
+
+      Map.put(acc, normalized_key, normalize_payload(nested_value))
+    end)
+  end
+
+  defp normalize_payload(value) when is_list(value), do: Enum.map(value, &normalize_payload/1)
+  defp normalize_payload(value), do: value
 
   defp validate_non_empty_string(value, key) do
     if is_binary(value) and value != "" do
@@ -465,13 +509,5 @@ defmodule OcppSimulator.Infrastructure.Serialization.OcppJson.PayloadValidator d
     else
       {:error, {:invalid_field, key, :must_be_map}}
     end
-  end
-
-  defp normalize_map_keys(map) do
-    map
-    |> Enum.reduce(%{}, fn {key, value}, acc ->
-      normalized_key = if is_atom(key), do: Atom.to_string(key), else: key
-      Map.put(acc, normalized_key, value)
-    end)
   end
 end

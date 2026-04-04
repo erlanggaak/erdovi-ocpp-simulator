@@ -32,6 +32,44 @@ defmodule OcppSimulator.Application.UseCases.ManageTargetEndpoints do
   def list_target_endpoints(_target_endpoint_repository, _actor_role, _filters),
     do: {:error, {:invalid_arguments, :list_target_endpoints}}
 
+  @spec get_target_endpoint(module(), String.t(), term()) :: {:ok, map()} | {:error, term()}
+  def get_target_endpoint(target_endpoint_repository, id, actor_role)
+      when is_atom(target_endpoint_repository) and is_binary(id) and id != "" do
+    with :ok <- AuthorizationPolicy.authorize(actor_role, :view_target_endpoints),
+         {:ok, endpoint} <- invoke(target_endpoint_repository, :get, [id]) do
+      {:ok, endpoint}
+    end
+  end
+
+  def get_target_endpoint(_target_endpoint_repository, _id, _actor_role),
+    do: {:error, {:invalid_arguments, :get_target_endpoint}}
+
+  @spec update_target_endpoint(module(), String.t(), map(), term()) :: {:ok, map()} | {:error, term()}
+  def update_target_endpoint(target_endpoint_repository, id, attrs, actor_role)
+      when is_atom(target_endpoint_repository) and is_binary(id) and id != "" and is_map(attrs) do
+    with :ok <- AuthorizationPolicy.authorize(actor_role, :manage_target_endpoints),
+         {:ok, existing} <- invoke(target_endpoint_repository, :get, [id]),
+         {:ok, endpoint} <- build_endpoint(Map.merge(existing, attrs) |> Map.put(:id, id)),
+         {:ok, persisted_endpoint} <- invoke(target_endpoint_repository, :update, [endpoint]) do
+      {:ok, persisted_endpoint}
+    end
+  end
+
+  def update_target_endpoint(_target_endpoint_repository, _id, _attrs, _actor_role),
+    do: {:error, {:invalid_arguments, :update_target_endpoint}}
+
+  @spec delete_target_endpoint(module(), String.t(), term()) :: :ok | {:error, term()}
+  def delete_target_endpoint(target_endpoint_repository, id, actor_role)
+      when is_atom(target_endpoint_repository) and is_binary(id) and id != "" do
+    with :ok <- AuthorizationPolicy.authorize(actor_role, :manage_target_endpoints),
+         result <- invoke(target_endpoint_repository, :delete, [id]) do
+      result
+    end
+  end
+
+  def delete_target_endpoint(_target_endpoint_repository, _id, _actor_role),
+    do: {:error, {:invalid_arguments, :delete_target_endpoint}}
+
   defp build_endpoint(attrs) when is_map(attrs) do
     with {:ok, id} <- fetch_required_string(attrs, :id),
          {:ok, name} <- fetch_required_string(attrs, :name),

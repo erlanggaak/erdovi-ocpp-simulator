@@ -147,11 +147,17 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManagerTest do
     assert is_map(present.queue_stats)
 
     assert :ok = GenServer.call(manager, {:disconnect, "session-lifecycle-1", :requested})
-    assert {:ok, present_after_disconnect} = GenServer.call(manager, {:session, "session-lifecycle-1"})
+
+    assert {:ok, present_after_disconnect} =
+             GenServer.call(manager, {:session, "session-lifecycle-1"})
+
     assert present_after_disconnect.session_state == :disconnected
   end
 
-  test "connect retries after transient failure and eventually reaches connected state", %{manager: manager, table: table} do
+  test "connect retries after transient failure and eventually reaches connected state", %{
+    manager: manager,
+    table: table
+  } do
     :ets.insert(table, {{:connect, "session-retry-1"}, [{:error, :tcp_closed}, :ok]})
 
     assert {:error, {:connect_failed, :tcp_closed}} =
@@ -178,7 +184,8 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManagerTest do
   } do
     :ets.insert(
       table,
-      {{:connect, "session-retry-exhausted-1"}, [{:error, :tcp_closed}, {:error, :tcp_closed}, {:error, :tcp_closed}]}
+      {{:connect, "session-retry-exhausted-1"},
+       [{:error, :tcp_closed}, {:error, :tcp_closed}, {:error, :tcp_closed}]}
     )
 
     assert {:error, {:connect_failed, :tcp_closed}} =
@@ -237,7 +244,85 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManagerTest do
     assert present.pending_correlation_count == 0
   end
 
-  test "handles inbound remote command and emits correlated call result", %{manager: manager, table: table} do
+  test "send_and_await_response returns correlated inbound response", %{manager: manager} do
+    assert :ok =
+             GenServer.call(manager, {
+               :connect,
+               "session-await-response-1",
+               %{url: "ws://localhost:9000/ocpp"}
+             })
+
+    {:ok, outbound_call} =
+      Message.new_call(
+        "msg-await-response-1",
+        "Heartbeat",
+        %{},
+        :outbound
+      )
+
+    waiter =
+      Task.async(fn ->
+        GenServer.call(
+          manager,
+          {:send_and_await_response, "session-await-response-1", outbound_call, 1_000},
+          :infinity
+        )
+      end)
+
+    assert eventually(fn ->
+             case GenServer.call(manager, {:session, "session-await-response-1"}) do
+               {:ok, present} ->
+                 present.pending_correlation_count == 1 and
+                   present.pending_response_waiter_count == 1
+
+               _ ->
+                 false
+             end
+           end)
+
+    {:ok, inbound_result} =
+      Message.new_call_result(
+        "msg-await-response-1",
+        %{"currentTime" => "2026-04-02T05:00:00Z"},
+        :inbound
+      )
+
+    {:ok, encoded_result} = OcppJson.encode(inbound_result, request_action: "Heartbeat")
+
+    assert {:ok, %{correlation_event: %{message_id: "msg-await-response-1"}}} =
+             GenServer.call(
+               manager,
+               {:ingest_inbound, "session-await-response-1", encoded_result}
+             )
+
+    assert {:ok, %{message: %Message{type: :call_result, message_id: "msg-await-response-1"}}} =
+             Task.await(waiter, 1_000)
+  end
+
+  test "rejects outbound action that is not charge-point initiated", %{manager: manager} do
+    assert :ok =
+             GenServer.call(manager, {
+               :connect,
+               "session-outbound-filter-1",
+               %{url: "ws://localhost:9000/ocpp"}
+             })
+
+    {:ok, outbound_call} =
+      Message.new_call(
+        "msg-outbound-filter-1",
+        "RemoteStartTransaction",
+        %{"idTag" => "AABBCC"},
+        :outbound
+      )
+
+    assert {:error, {:unsupported_outbound_action, "RemoteStartTransaction"}} =
+             GenServer.call(manager, {:send_message, "session-outbound-filter-1", outbound_call})
+  end
+
+  test "handles inbound remote command and emits correlated call result", %{
+    manager: manager,
+    table: table
+  } do
     assert :ok =
              GenServer.call(manager, {
                :connect,
@@ -265,7 +350,8 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManagerTest do
     assert eventually(fn ->
              case :ets.lookup(table, {:sent, "session-remote-1"}) do
                [{{:sent, "session-remote-1"}, [encoded_payload | _]}] ->
-                 match?({:ok, %Message{type: :call_result, message_id: "msg-remote-1"}},
+                 match?(
+                   {:ok, %Message{type: :call_result, message_id: "msg-remote-1"}},
                    OcppJson.decode(
                      encoded_payload,
                      :outbound,
@@ -277,6 +363,40 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManagerTest do
                  false
              end
            end)
+  end
+
+  test "await_inbound_call waits for matching inbound command", %{manager: manager} do
+    assert :ok =
+             GenServer.call(manager, {
+               :connect,
+               "session-await-remote-1",
+               %{url: "ws://localhost:9000/ocpp"}
+             })
+
+    waiter =
+      Task.async(fn ->
+        GenServer.call(
+          manager,
+          {:await_inbound_call, "session-await-remote-1", "RemoteStartTransaction", 1_000},
+          :infinity
+        )
+      end)
+
+    {:ok, inbound_remote} =
+      Message.new_call(
+        "msg-await-remote-1",
+        "RemoteStartTransaction",
+        %{"idTag" => "AABBCC", "connectorId" => 1},
+        :inbound
+      )
+
+    {:ok, encoded_remote} = OcppJson.encode(inbound_remote)
+
+    assert {:ok, %{message: %Message{type: :call}}} =
+             GenServer.call(manager, {:ingest_inbound, "session-await-remote-1", encoded_remote})
+
+    assert {:ok, %Message{type: :call, action: "RemoteStartTransaction"}} =
+             Task.await(waiter, 1_000)
   end
 
   test "disconnect cancels in-flight outbound send", %{manager: manager, table: table} do

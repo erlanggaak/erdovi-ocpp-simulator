@@ -35,6 +35,37 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.TargetEndpointRepositor
   def get(_id), do: {:error, {:invalid_field, :id, :must_be_non_empty_string}}
 
   @impl true
+  def update(endpoint) when is_map(endpoint) do
+    document = DocumentMapper.target_endpoint_to_document(endpoint)
+    id = document["id"]
+
+    with true <- is_binary(id) and id != "" || {:error, {:invalid_field, :id, :must_be_non_empty_string}},
+         {:ok, _result} <-
+           Adapter.update_one(
+             @collection,
+             %{"id" => id},
+             %{"$set" => document}
+           ) do
+      get(id)
+    end
+  end
+
+  def update(_endpoint), do: {:error, {:invalid_field, :endpoint, :must_be_map}}
+
+  @impl true
+  def delete(id) when is_binary(id) and id != "" do
+    with {:ok, result} <- Adapter.delete_one(@collection, %{"id" => id}) do
+      if deleted_count(result) > 0 do
+        :ok
+      else
+        {:error, :not_found}
+      end
+    end
+  end
+
+  def delete(_id), do: {:error, {:invalid_field, :id, :must_be_non_empty_string}}
+
+  @impl true
   def list(filters) when is_map(filters) do
     filter = build_filter(filters)
 
@@ -79,4 +110,10 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.TargetEndpointRepositor
   end
 
   defp fetch(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+
+  defp deleted_count(result) when is_map(result) do
+    Map.get(result, :deleted_count) || Map.get(result, "deleted_count") || 0
+  end
+
+  defp deleted_count(_result), do: 0
 end

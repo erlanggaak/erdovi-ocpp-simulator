@@ -33,6 +33,45 @@ defmodule OcppSimulator.Application.UseCases.ManageScenarios do
   def list_scenarios(_scenario_repository, _actor_role, _filters),
     do: {:error, {:invalid_arguments, :list_scenarios}}
 
+  @spec get_scenario(module(), String.t(), term()) :: {:ok, Scenario.t()} | {:error, term()}
+  def get_scenario(scenario_repository, id, actor_role)
+      when is_atom(scenario_repository) and is_binary(id) and id != "" do
+    with :ok <- AuthorizationPolicy.authorize(actor_role, :view_scenarios),
+         {:ok, scenario} <- invoke(scenario_repository, :get, [id]) do
+      {:ok, scenario}
+    end
+  end
+
+  def get_scenario(_scenario_repository, _id, _actor_role),
+    do: {:error, {:invalid_arguments, :get_scenario}}
+
+  @spec update_scenario(module(), String.t(), map(), term()) :: {:ok, Scenario.t()} | {:error, term()}
+  def update_scenario(scenario_repository, id, attrs, actor_role)
+      when is_atom(scenario_repository) and is_binary(id) and id != "" and is_map(attrs) do
+    with :ok <- AuthorizationPolicy.authorize(actor_role, :manage_scenarios),
+         {:ok, existing} <- invoke(scenario_repository, :get, [id]),
+         existing_snapshot <- Scenario.to_snapshot(existing),
+         {:ok, scenario} <- Scenario.new(Map.merge(existing_snapshot, attrs) |> Map.put(:id, id)),
+         {:ok, persisted_scenario} <- invoke(scenario_repository, :update, [scenario]) do
+      {:ok, persisted_scenario}
+    end
+  end
+
+  def update_scenario(_scenario_repository, _id, _attrs, _actor_role),
+    do: {:error, {:invalid_arguments, :update_scenario}}
+
+  @spec delete_scenario(module(), String.t(), term()) :: :ok | {:error, term()}
+  def delete_scenario(scenario_repository, id, actor_role)
+      when is_atom(scenario_repository) and is_binary(id) and id != "" do
+    with :ok <- AuthorizationPolicy.authorize(actor_role, :manage_scenarios),
+         result <- invoke(scenario_repository, :delete, [id]) do
+      result
+    end
+  end
+
+  def delete_scenario(_scenario_repository, _id, _actor_role),
+    do: {:error, {:invalid_arguments, :delete_scenario}}
+
   @spec upsert_action_template(module(), map(), term()) :: {:ok, map()} | {:error, term()}
   def upsert_action_template(template_repository, attrs, actor_role)
       when is_atom(template_repository) and is_map(attrs) do
@@ -58,6 +97,32 @@ defmodule OcppSimulator.Application.UseCases.ManageScenarios do
 
   def list_templates(_template_repository, _actor_role, _filters),
     do: {:error, {:invalid_arguments, :list_templates}}
+
+  @spec get_template(module(), String.t(), :action | :scenario, term()) ::
+          {:ok, map()} | {:error, term()}
+  def get_template(template_repository, id, type, actor_role)
+      when is_atom(template_repository) and is_binary(id) and id != "" and type in [:action, :scenario] do
+    with :ok <- AuthorizationPolicy.authorize(actor_role, :view_templates),
+         {:ok, template} <- invoke(template_repository, :get, [id, type]) do
+      {:ok, template}
+    end
+  end
+
+  def get_template(_template_repository, _id, _type, _actor_role),
+    do: {:error, {:invalid_arguments, :get_template}}
+
+  @spec delete_template(module(), String.t(), :action | :scenario, term()) ::
+          :ok | {:error, term()}
+  def delete_template(template_repository, id, type, actor_role)
+      when is_atom(template_repository) and is_binary(id) and id != "" and type in [:action, :scenario] do
+    with :ok <- AuthorizationPolicy.authorize(actor_role, :manage_templates),
+         result <- invoke(template_repository, :delete, [id, type]) do
+      result
+    end
+  end
+
+  def delete_template(_template_repository, _id, _type, _actor_role),
+    do: {:error, {:invalid_arguments, :delete_template}}
 
   defp upsert_template(template_repository, attrs, actor_role, type) do
     with :ok <- AuthorizationPolicy.authorize(actor_role, :manage_templates),

@@ -23,6 +23,7 @@ defmodule OcppSimulator.Application.Contracts.TemplateRepository do
         }
 
   @callback upsert(template()) :: {:ok, template()} | {:error, term()}
+  @callback delete(String.t(), template_type()) :: :ok | {:error, :not_found | term()}
   @callback get(String.t(), template_type()) :: {:ok, template()} | {:error, :not_found | term()}
   @callback list(map()) :: {:ok, page()} | {:error, term()}
 end

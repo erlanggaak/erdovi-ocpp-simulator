@@ -109,6 +109,24 @@ defmodule OcppSimulator.TestSupport.InMemoryMongoClient do
   end
 
   @impl true
+  def delete_one(_topology, collection, filter, _opts) do
+    ensure_started()
+
+    Agent.get_and_update(@agent, fn state ->
+      documents = collection_documents(state, collection)
+
+      case pop_first_match(documents, filter) do
+        {:ok, _matched_document, remaining_documents} ->
+          new_state = put_collection_documents(state, collection, remaining_documents)
+          {{:ok, %{deleted_count: 1}}, new_state}
+
+        :not_found ->
+          {{:ok, %{deleted_count: 0}}, state}
+      end
+    end)
+  end
+
+  @impl true
   def count_documents(_topology, collection, filter, _opts) do
     ensure_started()
 

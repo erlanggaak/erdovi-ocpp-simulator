@@ -35,6 +35,35 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.ScenarioRepository do
   def get(_id), do: {:error, {:invalid_field, :id, :must_be_non_empty_string}}
 
   @impl true
+  def update(%Scenario{} = scenario) do
+    document = DocumentMapper.scenario_to_document(scenario)
+
+    with {:ok, _result} <-
+           Adapter.update_one(
+             @collection,
+             %{"id" => scenario.id},
+             %{"$set" => document}
+           ) do
+      get(scenario.id)
+    end
+  end
+
+  def update(_scenario), do: {:error, {:invalid_field, :scenario, :must_be_struct}}
+
+  @impl true
+  def delete(id) when is_binary(id) and id != "" do
+    with {:ok, result} <- Adapter.delete_one(@collection, %{"id" => id}) do
+      if deleted_count(result) > 0 do
+        :ok
+      else
+        {:error, :not_found}
+      end
+    end
+  end
+
+  def delete(_id), do: {:error, {:invalid_field, :id, :must_be_non_empty_string}}
+
+  @impl true
   def list(filters) when is_map(filters) do
     filter = build_filter(filters)
 
@@ -76,4 +105,10 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.ScenarioRepository do
   end
 
   defp fetch(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+
+  defp deleted_count(result) when is_map(result) do
+    Map.get(result, :deleted_count) || Map.get(result, "deleted_count") || 0
+  end
+
+  defp deleted_count(_result), do: 0
 end

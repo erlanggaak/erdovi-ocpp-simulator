@@ -14,6 +14,8 @@ defmodule OcppSimulator.Application.Contracts.ChargePointRepository do
         }
 
   @callback insert(ChargePoint.t()) :: {:ok, ChargePoint.t()} | {:error, term()}
+  @callback update(ChargePoint.t()) :: {:ok, ChargePoint.t()} | {:error, term()}
+  @callback delete(String.t()) :: :ok | {:error, :not_found | term()}
   @callback get(String.t()) :: {:ok, ChargePoint.t()} | {:error, :not_found | term()}
   @callback list(map()) :: {:ok, page()} | {:error, term()}
 end

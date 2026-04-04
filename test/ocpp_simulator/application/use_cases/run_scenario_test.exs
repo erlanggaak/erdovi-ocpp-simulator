@@ -74,20 +74,72 @@ defmodule OcppSimulator.Application.UseCases.RunScenarioTest do
         {:ok,
          build_scenario!("scn-invalid-transition", [
            %{
-             id: "start",
+             id: "stop",
              type: :send_action,
              order: 1,
              payload: %{
-               "action" => "StartTransaction",
+               "action" => "StopTransaction",
                "payload" => %{
-                 "connectorId" => 1,
-                 "idTag" => "RFID-1",
-                 "meterStart" => 0,
+                 "transactionId" => 1,
+                 "meterStop" => 10,
                  "timestamp" => "2026-04-01T10:00:00Z"
                }
              }
            }
          ])}
+
+    def get("scn-cp-hydrated"),
+      do:
+        {:ok,
+         build_scenario!(
+           "scn-cp-hydrated",
+           [
+             %{
+               id: "boot",
+               type: :send_action,
+               order: 1,
+               payload: %{"action" => "BootNotification"}
+             }
+           ],
+           %{variables: %{"charge_point_id" => "cp-hydrated"}}
+         )}
+
+    def get("scn-ready-with-endpoint"),
+      do:
+        {:ok,
+         build_scenario!(
+           "scn-ready-with-endpoint",
+           ready_steps(),
+           %{variables: %{"target_endpoint_id" => "endpoint-1"}}
+         )}
+
+    def get("scn-await-remote-with-endpoint"),
+      do:
+        {:ok,
+         build_scenario!(
+           "scn-await-remote-with-endpoint",
+           [
+             %{
+               id: "boot",
+               type: :send_action,
+               order: 1,
+               payload: %{
+                 "action" => "BootNotification",
+                 "payload" => %{
+                   "chargePointVendor" => "Erdovi",
+                   "chargePointModel" => "Simulator"
+                 }
+               }
+             },
+             %{
+               id: "await_remote_start",
+               type: :await_response,
+               order: 2,
+               payload: %{"action" => "RemoteStartTransaction", "timeout_ms" => 1000}
+             }
+           ],
+           %{variables: %{"target_endpoint_id" => "endpoint-1"}}
+         )}
 
     def get(_id), do: {:error, :not_found}
 
@@ -190,6 +242,21 @@ defmodule OcppSimulator.Application.UseCases.RunScenarioTest do
     def get("run-invalid-transition"),
       do: {:ok, build_run!("run-invalid-transition", "scn-invalid-transition", :running)}
 
+    def get("run-cp-hydrated"),
+      do: {:ok, build_run!("run-cp-hydrated", "scn-cp-hydrated", :running)}
+
+    def get("run-ready-with-endpoint"),
+      do: {:ok, build_run!("run-ready-with-endpoint", "scn-ready-with-endpoint", :running)}
+
+    def get("run-await-remote-with-endpoint"),
+      do:
+        {:ok,
+         build_run!(
+           "run-await-remote-with-endpoint",
+           "scn-await-remote-with-endpoint",
+           :running
+         )}
+
     def get("run-variable-default"),
       do:
         {:ok,
@@ -234,6 +301,70 @@ defmodule OcppSimulator.Application.UseCases.RunScenarioTest do
     end
   end
 
+  defmodule ChargePointRepositoryStub do
+    def get("cp-hydrated") do
+      {:ok,
+       %{
+         id: "cp-hydrated",
+         vendor: "Hardhitter",
+         model: "HT1"
+       }}
+    end
+
+    def get(_id), do: {:error, :not_found}
+  end
+
+  defmodule TargetEndpointRepositoryStub do
+    def get("endpoint-1") do
+      {:ok,
+       %{
+         id: "endpoint-1",
+         name: "Local CSMS",
+         url: "ws://localhost:9000/ocpp",
+         protocol_options: %{},
+         retry_policy: %{}
+       }}
+    end
+
+    def get(_id), do: {:error, :not_found}
+  end
+
+  defmodule TransportGatewayStub do
+    alias OcppSimulator.Domain.Ocpp.Message
+
+    def connect(session_id, endpoint_profile) do
+      notify({:transport_connect, session_id, endpoint_profile})
+      :ok
+    end
+
+    def disconnect(session_id) do
+      notify({:transport_disconnect, session_id})
+      :ok
+    end
+
+    def send_message(_session_id, _message), do: :ok
+
+    def send_and_await_response(session_id, %Message{} = message, timeout_ms) do
+      notify({:transport_send_and_await, session_id, message.action, timeout_ms})
+
+      {:ok, response} =
+        Message.new_call_result(message.message_id, %{"status" => "Accepted"}, :inbound)
+
+      {:ok, %{message: response, correlation_event: %{request_action: message.action}}}
+    end
+
+    def await_inbound_call(session_id, action, timeout_ms) do
+      notify({:transport_await_inbound, session_id, action, timeout_ms})
+      Message.new_call("msg-inbound-1", action, %{"idTag" => "RFID-1"}, :inbound)
+    end
+
+    defp notify(event) do
+      if pid = Process.get(:run_scenario_test_pid) do
+        send(pid, event)
+      end
+    end
+  end
+
   defmodule IdGeneratorStub do
     def generate("run"), do: "run-generated-1"
   end
@@ -263,6 +394,16 @@ defmodule OcppSimulator.Application.UseCases.RunScenarioTest do
       send(self(), {:webhook_dispatched, event, run.id, metadata})
       :ok
     end
+  end
+
+  setup do
+    Process.put(:run_scenario_test_pid, self())
+
+    on_exit(fn ->
+      Process.delete(:run_scenario_test_pid)
+    end)
+
+    :ok
   end
 
   test "start_run/3 validates, queues, and persists frozen snapshot" do
@@ -350,6 +491,71 @@ defmodule OcppSimulator.Application.UseCases.RunScenarioTest do
     assert_received {:webhook_dispatched, :run_succeeded, "run-running", _metadata}
   end
 
+  test "execute_run/4 fails when transport is enabled but scenario has no target endpoint reference" do
+    deps = %{
+      scenario_run_repository: ScenarioRunRepositoryStub,
+      transport_gateway: TransportGatewayStub,
+      webhook_dispatcher: WebhookDispatcherStub
+    }
+
+    assert {:ok, final_run} = RunScenario.execute_run(deps, "run-running", :system)
+    assert final_run.state == :failed
+
+    assert match?(
+             {:transport_connect_failed,
+              {:invalid_field, :target_endpoint_id, :must_reference_existing_endpoint}},
+             final_run.metadata.failure_reason
+           )
+  end
+
+  test "execute_run/4 uses transport gateway and waits for real protocol exchange when endpoint is configured" do
+    deps = %{
+      scenario_run_repository: ScenarioRunRepositoryStub,
+      target_endpoint_repository: TargetEndpointRepositoryStub,
+      transport_gateway: TransportGatewayStub,
+      webhook_dispatcher: WebhookDispatcherStub
+    }
+
+    assert {:ok, final_run} = RunScenario.execute_run(deps, "run-ready-with-endpoint", :system)
+    assert final_run.state == :succeeded
+
+    assert_receive {:transport_connect, "session-run-ready-with-endpoint", %{id: "endpoint-1"}}
+
+    assert_receive {:transport_send_and_await, "session-run-ready-with-endpoint",
+                    "BootNotification", 30_000}
+
+    assert_receive {:transport_send_and_await, "session-run-ready-with-endpoint", "Authorize",
+                    30_000}
+
+    assert_receive {:transport_send_and_await, "session-run-ready-with-endpoint",
+                    "StartTransaction", 30_000}
+
+    assert_receive {:transport_send_and_await, "session-run-ready-with-endpoint", "MeterValues",
+                    30_000}
+
+    assert_receive {:transport_send_and_await, "session-run-ready-with-endpoint",
+                    "StopTransaction", 30_000}
+
+    assert_receive {:transport_disconnect, "session-run-ready-with-endpoint"}
+  end
+
+  test "execute_run/4 waits inbound remote operation on await_response step" do
+    deps = %{
+      scenario_run_repository: ScenarioRunRepositoryStub,
+      target_endpoint_repository: TargetEndpointRepositoryStub,
+      transport_gateway: TransportGatewayStub,
+      webhook_dispatcher: WebhookDispatcherStub
+    }
+
+    assert {:ok, final_run} =
+             RunScenario.execute_run(deps, "run-await-remote-with-endpoint", :system)
+
+    assert final_run.state == :succeeded
+
+    assert_receive {:transport_await_inbound, "session-run-await-remote-with-endpoint",
+                    "RemoteStartTransaction", 1000}
+  end
+
   test "execute_run/4 fails when strict schema validation rejects a step payload" do
     deps = %{
       scenario_run_repository: ScenarioRunRepositoryStub,
@@ -370,7 +576,7 @@ defmodule OcppSimulator.Application.UseCases.RunScenarioTest do
 
     assert {:ok, final_run} = RunScenario.execute_run(deps, "run-invalid-transition", :system)
     assert final_run.state == :failed
-    assert match?({:invalid_transition, :none, :started}, final_run.metadata.failure_reason)
+    assert match?({:invalid_transition, :none, :stopped}, final_run.metadata.failure_reason)
   end
 
   test "execute_run/4 transitions run to timed_out when timeout budget is exceeded" do
@@ -431,6 +637,26 @@ defmodule OcppSimulator.Application.UseCases.RunScenarioTest do
 
     assert final_run.state == :succeeded
     assert finished_at - started_at >= 25
+  end
+
+  test "execute_run/4 auto-hydrates BootNotification payload from selected charge point" do
+    deps = %{
+      scenario_run_repository: ScenarioRunRepositoryStub,
+      charge_point_repository: ChargePointRepositoryStub,
+      webhook_dispatcher: WebhookDispatcherStub
+    }
+
+    assert {:ok, final_run} = RunScenario.execute_run(deps, "run-cp-hydrated", :system)
+    assert final_run.state == :succeeded
+
+    boot_payload =
+      final_run.metadata.step_results
+      |> Enum.at(0)
+      |> Map.fetch!(:payload)
+
+    assert boot_payload["action"] == "BootNotification"
+    assert boot_payload["chargePointVendor"] == "Hardhitter"
+    assert boot_payload["chargePointModel"] == "HT1"
   end
 
   test "execute_run/4 exits early when run has already been canceled" do

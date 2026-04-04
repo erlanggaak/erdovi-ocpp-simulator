@@ -15,6 +15,24 @@ defmodule OcppSimulatorWeb do
     quote do
       use Phoenix.LiveView
       unquote(html_helpers())
+
+      def handle_event("dismiss_global_error_modal", _params, socket) do
+        socket =
+          socket
+          |> clear_flash(:error)
+          |> __clear_global_error_assign(:feedback)
+          |> __clear_global_error_assign(:notice)
+
+        {:noreply, socket}
+      end
+
+      defp __clear_global_error_assign(socket, key) do
+        if Map.has_key?(socket.assigns, key) do
+          assign(socket, key, nil)
+        else
+          socket
+        end
+      end
     end
   end
 

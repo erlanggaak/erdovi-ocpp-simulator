@@ -336,6 +336,47 @@ defmodule OcppSimulatorWeb.RouterAuthorizationTest do
     assert redirected_to(conn, 302) == "/"
   end
 
+  test "root route renders role-selection page" do
+    conn =
+      build_conn()
+      |> get("/")
+
+    response = html_response(conn, 200)
+    assert response =~ "Pilih Role Login"
+    assert response =~ "Viewer"
+    assert response =~ "Operator"
+    assert response =~ "Admin"
+  end
+
+  test "dashboard route redirects to role selection when session role is missing" do
+    conn =
+      build_conn()
+      |> get("/dashboard")
+
+    assert redirected_to(conn, 302) == "/"
+  end
+
+  test "dashboard route renders for viewer role after role selection" do
+    conn =
+      build_conn()
+      |> init_test_session(%{"current_role" => "viewer"})
+      |> get("/dashboard")
+
+    response = html_response(conn, 200)
+    assert response =~ "Simulator Control Center"
+    assert response =~ "Run Orchestrator"
+  end
+
+  test "dashboard run form includes browser fallback action for start run" do
+    conn =
+      build_conn()
+      |> init_test_session(%{"current_role" => "viewer"})
+      |> get("/dashboard")
+
+    response = html_response(conn, 200)
+    assert response =~ ~s(action="/runs" method="post" phx-submit="start_run")
+  end
+
   test "charge point registry route allows viewer" do
     conn =
       build_conn()
@@ -343,6 +384,162 @@ defmodule OcppSimulatorWeb.RouterAuthorizationTest do
       |> get("/charge-points")
 
     assert html_response(conn, 200) =~ "Charge Point Registry"
+  end
+
+  test "browser fallback post /charge-points creates charge point for admin role" do
+    conn =
+      build_conn()
+      |> init_test_session(%{"current_role" => "admin"})
+      |> post("/charge-points", %{
+        "charge_point" => %{
+          "id" => "cp-browser-post-1",
+          "vendor" => "Erdovi",
+          "model" => "AC-200",
+          "firmware_version" => "1.2.3",
+          "connector_count" => "2",
+          "heartbeat_interval_seconds" => "60",
+          "behavior_profile" => "default"
+        }
+      })
+
+    assert redirected_to(conn, 302) == "/charge-points"
+  end
+
+  test "browser fallback post /charge-points redirects with viewer role" do
+    conn =
+      build_conn()
+      |> init_test_session(%{"current_role" => "viewer"})
+      |> post("/charge-points", %{
+        "charge_point" => %{
+          "id" => "cp-browser-post-viewer",
+          "vendor" => "Erdovi",
+          "model" => "AC-200",
+          "firmware_version" => "1.2.3",
+          "connector_count" => "2",
+          "heartbeat_interval_seconds" => "60",
+          "behavior_profile" => "default"
+        }
+      })
+
+    assert redirected_to(conn, 302) == "/charge-points"
+  end
+
+  test "browser fallback post /scenarios creates scenario for admin role" do
+    conn =
+      build_conn()
+      |> init_test_session(%{"current_role" => "admin"})
+      |> post("/scenarios", %{
+        "scenario" => %{
+          "id" => "scn-browser-post-1",
+          "name" => "Browser Scenario",
+          "version" => "1.0.0",
+          "steps_json" =>
+            Jason.encode!([
+              %{
+                "id" => "boot",
+                "type" => "send_action",
+                "order" => 1,
+                "payload" => %{"action" => "BootNotification"},
+                "delay_ms" => 0,
+                "loop_count" => 1,
+                "enabled" => true
+              }
+            ])
+        }
+      })
+
+    assert redirected_to(conn, 302) == "/scenarios"
+  end
+
+  test "browser fallback post /scenarios redirects with viewer role" do
+    conn =
+      build_conn()
+      |> init_test_session(%{"current_role" => "viewer"})
+      |> post("/scenarios", %{
+        "scenario" => %{
+          "id" => "scn-browser-post-viewer",
+          "name" => "Viewer Scenario",
+          "version" => "1.0.0",
+          "steps_json" =>
+            Jason.encode!([
+              %{
+                "id" => "boot",
+                "type" => "send_action",
+                "order" => 1,
+                "payload" => %{"action" => "BootNotification"},
+                "delay_ms" => 0,
+                "loop_count" => 1,
+                "enabled" => true
+              }
+            ])
+        }
+      })
+
+    assert redirected_to(conn, 302) == "/scenarios"
+  end
+
+  test "browser fallback post /templates saves template for admin role" do
+    conn =
+      build_conn()
+      |> init_test_session(%{"current_role" => "admin"})
+      |> post("/templates", %{
+        "template" => %{
+          "id" => "tpl-browser-post-1",
+          "name" => "Browser Template",
+          "version" => "1.0.0",
+          "type" => "action",
+          "payload_template_json" => Jason.encode!(%{"action" => "Heartbeat"})
+        }
+      })
+
+    assert redirected_to(conn, 302) == "/templates"
+  end
+
+  test "browser fallback post /templates redirects with viewer role" do
+    conn =
+      build_conn()
+      |> init_test_session(%{"current_role" => "viewer"})
+      |> post("/templates", %{
+        "template" => %{
+          "id" => "tpl-browser-post-viewer",
+          "name" => "Viewer Template",
+          "version" => "1.0.0",
+          "type" => "action",
+          "payload_template_json" => Jason.encode!(%{"action" => "Heartbeat"})
+        }
+      })
+
+    assert redirected_to(conn, 302) == "/templates"
+  end
+
+  test "browser fallback post /runs queues run for operator role" do
+    conn =
+      build_conn()
+      |> init_test_session(%{"current_role" => "operator"})
+      |> post("/runs", %{
+        "run" => %{
+          "scenario_id" => "scn-api-export-1",
+          "execute_after_start" => "false",
+          "timeout_ms" => "15000"
+        }
+      })
+
+    assert redirected_to(conn, 302) == "/dashboard"
+  end
+
+  test "browser fallback post /runs redirects with viewer role" do
+    conn =
+      build_conn()
+      |> init_test_session(%{"current_role" => "viewer"})
+      |> post("/runs", %{
+        "run" => %{
+          "scenario_id" => "scn-api-export-1",
+          "execute_after_start" => "false",
+          "timeout_ms" => "15000"
+        }
+      })
+
+    assert redirected_to(conn, 302) == "/dashboard"
   end
 
   test "scenario builder route allows operator from session role" do
@@ -418,6 +615,179 @@ defmodule OcppSimulatorWeb.RouterAuthorizationTest do
     assert socket.assigns.field_errors[:steps] == "Steps must be valid JSON array format."
   end
 
+  test "scenario builder add_step appends a new ordered step" do
+    {:ok, socket} =
+      OcppSimulatorWeb.ScenarioBuilderLive.mount(
+        %{},
+        %{},
+        live_socket(%{current_role: :operator})
+      )
+
+    initial_step_count = length(socket.assigns.visual_model["steps"])
+
+    {:noreply, socket} =
+      OcppSimulatorWeb.ScenarioBuilderLive.handle_event(
+        "add_step",
+        %{},
+        socket
+      )
+
+    updated_steps = socket.assigns.visual_model["steps"]
+    assert length(updated_steps) == initial_step_count + 1
+
+    assert List.last(updated_steps)["id"] == "step_#{initial_step_count + 1}"
+    assert List.last(updated_steps)["order"] == initial_step_count + 1
+    assert List.last(updated_steps)["payload"]["action"] == "BootNotification"
+    assert Map.has_key?(List.last(updated_steps)["payload"], "payload")
+  end
+
+  test "scenario builder updates send_action payload template when action changes" do
+    {:ok, socket} =
+      OcppSimulatorWeb.ScenarioBuilderLive.mount(
+        %{},
+        %{},
+        live_socket(%{current_role: :operator})
+      )
+
+    existing_step = Enum.at(socket.assigns.visual_model["steps"], 0)
+
+    {:noreply, socket} =
+      OcppSimulatorWeb.ScenarioBuilderLive.handle_event(
+        "update_step",
+        %{
+          "index" => "0",
+          "step" => %{
+            "id" => existing_step["id"],
+            "type" => "send_action",
+            "action" => "Authorize",
+            "payload_json" => Jason.encode!(existing_step["payload"]),
+            "delay_ms" => to_string(existing_step["delay_ms"]),
+            "loop_count" => to_string(existing_step["loop_count"]),
+            "enabled" => "true"
+          }
+        },
+        socket
+      )
+
+    updated_step = Enum.at(socket.assigns.visual_model["steps"], 0)
+    assert updated_step["payload"]["action"] == "Authorize"
+    assert updated_step["payload"]["payload"] == %{"idTag" => "RFID-1"}
+  end
+
+  test "scenario builder save_scenario persists draft and returns success feedback" do
+    {:ok, socket} =
+      OcppSimulatorWeb.ScenarioBuilderLive.mount(
+        %{},
+        %{},
+        live_socket(%{current_role: :operator})
+      )
+
+    {:noreply, socket} =
+      OcppSimulatorWeb.ScenarioBuilderLive.handle_event(
+        "save_scenario",
+        %{},
+        socket
+      )
+
+    assert socket.assigns.feedback =~ "was created successfully"
+  end
+
+  test "scenario builder supports switching visual and json mode with synced payload" do
+    {:ok, socket} =
+      OcppSimulatorWeb.ScenarioBuilderLive.mount(
+        %{},
+        %{},
+        live_socket(%{current_role: :operator})
+      )
+
+    {:noreply, socket} =
+      OcppSimulatorWeb.ScenarioBuilderLive.handle_event(
+        "switch_mode",
+        %{"mode" => "json"},
+        socket
+      )
+
+    assert socket.assigns.mode == "json"
+
+    updated_raw_json =
+      Jason.encode!(%{
+        "id" => "scenario-builder-preview",
+        "name" => "Edited From JSON",
+        "version" => "1.0.0",
+        "schema_version" => "1.0",
+        "variables" => %{},
+        "variable_scopes" => ["scenario", "run", "session", "step"],
+        "validation_policy" => %{
+          "strict_ocpp_schema" => true,
+          "strict_state_transitions" => true,
+          "strict_variable_resolution" => true
+        },
+        "steps" => [
+          %{
+            "id" => "boot",
+            "type" => "send_action",
+            "order" => 1,
+            "payload" => %{"action" => "BootNotification", "chargePointVendor" => "Erdovi"},
+            "delay_ms" => 0,
+            "loop_count" => 1,
+            "enabled" => true
+          }
+        ]
+      })
+
+    {:noreply, socket} =
+      OcppSimulatorWeb.ScenarioBuilderLive.handle_event(
+        "update_raw",
+        %{"scenario" => %{"raw_json" => updated_raw_json}},
+        socket
+      )
+
+    assert socket.assigns.visual_model["name"] == "Edited From JSON"
+
+    {:noreply, socket} =
+      OcppSimulatorWeb.ScenarioBuilderLive.handle_event(
+        "switch_mode",
+        %{"mode" => "visual"},
+        socket
+      )
+
+    assert socket.assigns.mode == "visual"
+    assert socket.assigns.visual_model["name"] == "Edited From JSON"
+  end
+
+  test "scenario builder keeps json mode and surfaces raw json error when switching from invalid json" do
+    {:ok, socket} =
+      OcppSimulatorWeb.ScenarioBuilderLive.mount(
+        %{},
+        %{},
+        live_socket(%{current_role: :operator})
+      )
+
+    {:noreply, socket} =
+      OcppSimulatorWeb.ScenarioBuilderLive.handle_event(
+        "switch_mode",
+        %{"mode" => "json"},
+        socket
+      )
+
+    {:noreply, socket} =
+      OcppSimulatorWeb.ScenarioBuilderLive.handle_event(
+        "update_raw",
+        %{"scenario" => %{"raw_json" => "{invalid-json"}},
+        socket
+      )
+
+    {:noreply, socket} =
+      OcppSimulatorWeb.ScenarioBuilderLive.handle_event(
+        "switch_mode",
+        %{"mode" => "visual"},
+        socket
+      )
+
+    assert socket.assigns.mode == "json"
+    assert socket.assigns.field_errors[:raw_json] =~ "JSON document is invalid"
+  end
+
   test "target endpoint create keeps inline validation errors for invalid form input" do
     {:ok, socket} =
       OcppSimulatorWeb.TargetEndpointsLive.mount(
@@ -445,6 +815,94 @@ defmodule OcppSimulatorWeb.RouterAuthorizationTest do
     assert socket.assigns.endpoint_errors[:retry_max_attempts] == "Must be a positive integer."
     assert socket.assigns.endpoint_errors[:retry_backoff_ms] == "Must be a positive integer."
     assert socket.assigns.feedback == "Please fix validation errors before submitting."
+  end
+
+  test "target endpoint create auto-prefixes ws:// when url has no scheme" do
+    {:ok, socket} =
+      OcppSimulatorWeb.TargetEndpointsLive.mount(
+        %{},
+        %{},
+        live_socket(%{current_role: :operator})
+      )
+
+    {:noreply, socket} =
+      OcppSimulatorWeb.TargetEndpointsLive.handle_event(
+        "create_endpoint",
+        %{
+          "endpoint" => %{
+            "id" => "endpoint-auto-1",
+            "name" => "Auto Prefix Endpoint",
+            "url" => "localhost:9000/ocpp",
+            "retry_max_attempts" => "3",
+            "retry_backoff_ms" => "1000"
+          }
+        },
+        socket
+      )
+
+    assert socket.assigns.feedback == "Target endpoint was created successfully."
+    assert socket.assigns.endpoint_errors == %{}
+  end
+
+  test "target endpoint create returns actionable message for viewer role" do
+    {:ok, socket} =
+      OcppSimulatorWeb.TargetEndpointsLive.mount(
+        %{},
+        %{},
+        live_socket(%{current_role: :viewer})
+      )
+
+    {:noreply, socket} =
+      OcppSimulatorWeb.TargetEndpointsLive.handle_event(
+        "create_endpoint",
+        %{
+          "endpoint" => %{
+            "id" => "endpoint-viewer-1",
+            "name" => "Viewer Endpoint",
+            "url" => "ws://localhost:9000/ocpp",
+            "retry_max_attempts" => "3",
+            "retry_backoff_ms" => "1000"
+          }
+        },
+        socket
+      )
+
+    assert socket.assigns.feedback =~ "Ganti role ke Operator/Admin"
+    assert socket.assigns.endpoint_errors[:base] =~ "tidak punya izin"
+  end
+
+  test "browser fallback post /target-endpoints creates endpoint for admin role" do
+    conn =
+      build_conn()
+      |> init_test_session(%{"current_role" => "admin"})
+      |> post("/target-endpoints", %{
+        "endpoint" => %{
+          "id" => "endpoint-browser-post-1",
+          "name" => "Browser Post Endpoint",
+          "url" => "localhost:9000/ocpp",
+          "retry_max_attempts" => "3",
+          "retry_backoff_ms" => "1000"
+        }
+      })
+
+    assert redirected_to(conn, 302) == "/target-endpoints"
+  end
+
+  test "browser fallback post /target-endpoints redirects with viewer role" do
+    conn =
+      build_conn()
+      |> init_test_session(%{"current_role" => "viewer"})
+      |> post("/target-endpoints", %{
+        "endpoint" => %{
+          "id" => "endpoint-browser-post-viewer",
+          "name" => "Viewer Endpoint",
+          "url" => "ws://localhost:9000/ocpp",
+          "retry_max_attempts" => "3",
+          "retry_backoff_ms" => "1000"
+        }
+      })
+
+    assert redirected_to(conn, 302) == "/target-endpoints"
   end
 
   test "logs live supports filter-first query and correlation drill-down" do

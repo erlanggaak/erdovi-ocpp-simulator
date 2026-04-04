@@ -44,12 +44,16 @@ config :ocpp_simulator,
 
 config :ocpp_simulator, :allow_untrusted_role_header, false
 
+config :ocpp_simulator,
+       :ocpp_transport_adapter,
+       OcppSimulator.Infrastructure.Transport.WebSocket.TcpAdapter
+
 config :ocpp_simulator, :id_generator, OcppSimulator.Infrastructure.Support.IdGenerator
 
 config :ocpp_simulator,
-  :structured_logger,
-  OcppSimulator.Infrastructure.Observability.StructuredLogger
+       :structured_logger,
+       OcppSimulator.Infrastructure.Observability.StructuredLogger
 
 config :ocpp_simulator,
-  :webhook_dispatcher,
-  OcppSimulator.Infrastructure.Integrations.WebhookDispatcher
+       :webhook_dispatcher,
+       OcppSimulator.Infrastructure.Integrations.WebhookDispatcher

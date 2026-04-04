@@ -1,6 +1,7 @@
 defmodule OcppSimulator.Infrastructure.Persistence.Mongo.RepositoriesTest do
   use ExUnit.Case, async: false
 
+  alias OcppSimulator.Domain.Sessions.SessionStateMachine
   alias OcppSimulator.Domain.ChargePoints.ChargePoint
   alias OcppSimulator.Domain.Runs.ScenarioRun
   alias OcppSimulator.Domain.Scenarios.Scenario
@@ -61,7 +62,9 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.RepositoriesTest do
 
   test "charge point list is page-aware with explicit metadata" do
     Enum.each(1..55, fn index ->
-      charge_point = build_charge_point!("CP-BULK-#{String.pad_leading(Integer.to_string(index), 3, "0")}")
+      charge_point =
+        build_charge_point!("CP-BULK-#{String.pad_leading(Integer.to_string(index), 3, "0")}")
+
       assert {:ok, _} = ChargePointRepository.insert(charge_point)
     end)
 
@@ -144,7 +147,42 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.RepositoriesTest do
              ScenarioRunRepository.update_state("run-mongo-1", :running, %{attempt: 1})
 
     assert updated.state == :running
-    assert updated.metadata["attempt"] == 1 or updated.metadata[:attempt] == 1
+    assert updated.metadata["source"] == "test"
+    assert updated.metadata["attempt"] == 1
+    refute Map.has_key?(updated.metadata, :attempt)
+
+    assert {:ok, failed} =
+             ScenarioRunRepository.update_state("run-mongo-1", :failed, %{
+               failure_reason:
+                 {:invalid_payload, "BootNotification", :missing_required_keys,
+                  ["chargePointModel", "chargePointVendor"]}
+             })
+
+    assert failed.metadata["failure_reason"] == [
+             "invalid_payload",
+             "BootNotification",
+             "missing_required_keys",
+             ["chargePointModel", "chargePointVendor"]
+           ]
+
+    transition_event = %SessionStateMachine.TransitionEvent{
+      session_id: "session-run-mongo-1",
+      from_state: :idle,
+      to_state: :connected,
+      occurred_at: ~U[2026-04-01 10:00:00Z],
+      correlation: %{run_id: "run-mongo-1", step_id: "boot"}
+    }
+
+    assert {:ok, running} =
+             ScenarioRunRepository.update_state("run-mongo-1", :running, %{
+               transition_events: [transition_event]
+             })
+
+    assert [%{} = stored_event] = running.metadata["transition_events"]
+    assert stored_event["session_id"] == "session-run-mongo-1"
+    assert stored_event["from_state"] == "idle"
+    assert stored_event["to_state"] == "connected"
+    assert stored_event["correlation"]["step_id"] == "boot"
 
     assert {:ok, page} = ScenarioRunRepository.list_history(%{scenario_id: "scn-run-1"})
     assert page.total_entries == 1
@@ -268,7 +306,11 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.RepositoriesTest do
     scenario_run_indexes = InMemoryMongoClient.indexes_for("scenario_runs")
     log_indexes = InMemoryMongoClient.indexes_for("logs")
 
-    assert Enum.any?(scenario_run_indexes, &(Keyword.get(&1, :name) == "scenario_runs_history_idx"))
+    assert Enum.any?(
+             scenario_run_indexes,
+             &(Keyword.get(&1, :name) == "scenario_runs_history_idx")
+           )
+
     assert Enum.any?(log_indexes, &(Keyword.get(&1, :name) == "logs_run_timestamp_idx"))
   end
 

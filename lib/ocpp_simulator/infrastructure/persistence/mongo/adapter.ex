@@ -80,6 +80,22 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.Adapter do
     result
   end
 
+  @spec delete_one(String.t(), map(), keyword()) :: {:ok, term()} | {:error, term()}
+  def delete_one(collection, filter, opts \\ []) when is_binary(collection) and is_map(filter) do
+    result = client_module().delete_one(topology(), collection, filter, mongo_options(opts))
+
+    maybe_log(collection, "persistence.delete_one", %{
+      collection: collection,
+      operation: "delete_one",
+      run_id: fetch(filter, "run_id"),
+      session_id: fetch(filter, "session_id"),
+      message_id: fetch(filter, "message_id"),
+      status: operation_status(result)
+    })
+
+    result
+  end
+
   @spec count_documents(String.t(), map()) :: {:ok, non_neg_integer()} | {:error, term()}
   def count_documents(collection, filter) when is_binary(collection) and is_map(filter) do
     result = client_module().count_documents(topology(), collection, filter, mongo_options())

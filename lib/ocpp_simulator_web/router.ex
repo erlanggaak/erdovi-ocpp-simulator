@@ -2,6 +2,7 @@ defmodule OcppSimulatorWeb.Router do
   use OcppSimulatorWeb, :router
 
   alias OcppSimulatorWeb.Auth.CurrentRolePlug
+  alias OcppSimulatorWeb.Auth.EnsureRoleSelectedPlug
   alias OcppSimulatorWeb.Auth.LiveAuthorization
 
   pipeline :browser do
@@ -11,6 +12,7 @@ defmodule OcppSimulatorWeb.Router do
     plug(:protect_from_forgery)
     plug(:put_secure_browser_headers)
     plug(CurrentRolePlug, source: :session)
+    plug(EnsureRoleSelectedPlug)
   end
 
   pipeline :api do
@@ -23,10 +25,20 @@ defmodule OcppSimulatorWeb.Router do
     pipe_through(:browser)
 
     get("/health", HealthController, :show)
+    post("/session/role", RoleSessionController, :switch)
+    post("/charge-points", ChargePointController, :create)
+    post("/target-endpoints", TargetEndpointController, :create)
+    post("/scenarios", ScenarioController, :create)
+    post("/templates", TemplateController, :create)
+    post("/runs", RunController, :create)
+
+    live_session :role_selection do
+      live("/", RoleSelectionLive, :index)
+    end
 
     live_session :dashboard,
       on_mount: [{LiveAuthorization, :view_dashboard}] do
-      live("/", DashboardLive, :index)
+      live("/dashboard", DashboardLive, :index)
     end
 
     live_session :charge_points,

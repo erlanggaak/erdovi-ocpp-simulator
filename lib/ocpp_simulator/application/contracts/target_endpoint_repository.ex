@@ -21,6 +21,8 @@ defmodule OcppSimulator.Application.Contracts.TargetEndpointRepository do
         }
 
   @callback insert(endpoint()) :: {:ok, endpoint()} | {:error, term()}
+  @callback update(endpoint()) :: {:ok, endpoint()} | {:error, term()}
+  @callback delete(String.t()) :: :ok | {:error, :not_found | term()}
   @callback get(String.t()) :: {:ok, endpoint()} | {:error, :not_found | term()}
   @callback list(map()) :: {:ok, page()} | {:error, term()}
 end

@@ -14,6 +14,8 @@ defmodule OcppSimulator.Application.Contracts.ScenarioRepository do
         }
 
   @callback insert(Scenario.t()) :: {:ok, Scenario.t()} | {:error, term()}
+  @callback update(Scenario.t()) :: {:ok, Scenario.t()} | {:error, term()}
+  @callback delete(String.t()) :: :ok | {:error, :not_found | term()}
   @callback get(String.t()) :: {:ok, Scenario.t()} | {:error, :not_found | term()}
   @callback list(map()) :: {:ok, page()} | {:error, term()}
 end

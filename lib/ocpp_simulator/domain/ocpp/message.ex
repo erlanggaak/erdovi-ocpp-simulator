@@ -4,20 +4,34 @@ defmodule OcppSimulator.Domain.Ocpp.Message do
   """
 
   @supported_actions [
-    "BootNotification",
-    "Heartbeat",
-    "StatusNotification",
     "Authorize",
-    "StartTransaction",
+    "BootNotification",
+    "CancelReservation",
+    "ChangeAvailability",
+    "ChangeConfiguration",
+    "ClearCache",
+    "ClearChargingProfile",
+    "DataTransfer",
+    "DiagnosticsStatusNotification",
+    "FirmwareStatusNotification",
+    "GetCompositeSchedule",
+    "GetConfiguration",
+    "GetDiagnostics",
+    "GetLocalListVersion",
+    "Heartbeat",
     "MeterValues",
-    "StopTransaction",
     "RemoteStartTransaction",
     "RemoteStopTransaction",
+    "ReserveNow",
     "Reset",
-    "ChangeAvailability",
+    "SendLocalList",
+    "SetChargingProfile",
+    "StartTransaction",
+    "StatusNotification",
+    "StopTransaction",
     "TriggerMessage",
-    "ChangeConfiguration",
-    "GetConfiguration"
+    "UnlockConnector",
+    "UpdateFirmware"
   ]
 
   @enforce_keys [:type, :message_id, :payload]

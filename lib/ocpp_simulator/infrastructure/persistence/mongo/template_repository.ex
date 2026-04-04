@@ -51,6 +51,21 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.TemplateRepository do
   def get(_id, _type), do: {:error, {:invalid_field, :id, :must_be_non_empty_string}}
 
   @impl true
+  def delete(id, type) when is_binary(id) and id != "" do
+    with {:ok, normalized_type} <- normalize_template_type(type),
+         {:ok, result} <-
+           Adapter.delete_one(@collection, %{"id" => id, "type" => normalized_type}) do
+      if deleted_count(result) > 0 do
+        :ok
+      else
+        {:error, :not_found}
+      end
+    end
+  end
+
+  def delete(_id, _type), do: {:error, {:invalid_field, :id, :must_be_non_empty_string}}
+
+  @impl true
   def list(filters) when is_map(filters) do
     with {:ok, pagination} <-
            QueryBuilder.pagination(filters,
@@ -114,4 +129,10 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.TemplateRepository do
   end
 
   defp fetch(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+
+  defp deleted_count(result) when is_map(result) do
+    Map.get(result, :deleted_count) || Map.get(result, "deleted_count") || 0
+  end
+
+  defp deleted_count(_result), do: 0
 end
