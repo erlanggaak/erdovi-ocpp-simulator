@@ -22,6 +22,19 @@ defmodule OcppSimulatorWeb.RouterAuthorizationTest do
       {:ok, %{entries: [scenario], page: 1, page_size: 50, total_entries: 1, total_pages: 1}}
     end
 
+    def get("scn-api-export-1") do
+      Scenario.new(%{
+        id: "scn-api-export-1",
+        name: "API Export",
+        version: "1.0.0",
+        steps: [
+          %{id: "boot", type: :send_action, payload: %{"action" => "BootNotification"}}
+        ]
+      })
+    end
+
+    def get(_id), do: {:error, :not_found}
+
     def insert(scenario), do: {:ok, scenario}
   end
 
@@ -66,6 +79,8 @@ defmodule OcppSimulatorWeb.RouterAuthorizationTest do
 
       {:ok, %{entries: [charge_point], page: 1, page_size: 50, total_entries: 1, total_pages: 1}}
     end
+
+    def insert(charge_point), do: {:ok, charge_point}
   end
 
   defmodule TargetEndpointRepositoryStub do
@@ -104,6 +119,16 @@ defmodule OcppSimulatorWeb.RouterAuthorizationTest do
       {:ok, %{entries: [sample_run()], page: 1, page_size: 25, total_entries: 1, total_pages: 1}}
     end
 
+    def insert(run), do: {:ok, run}
+    def get("run-history-1"), do: {:ok, sample_run()}
+    def get(_id), do: {:error, :not_found}
+
+    def update_state("run-history-1", state, metadata) do
+      {:ok, %{sample_run() | state: state, metadata: Map.merge(sample_run().metadata, metadata)}}
+    end
+
+    def update_state(_id, _state, _metadata), do: {:error, :not_found}
+
     defp sample_run do
       {:ok, scenario} =
         Scenario.new(%{
@@ -128,6 +153,8 @@ defmodule OcppSimulatorWeb.RouterAuthorizationTest do
   end
 
   defmodule LogRepositoryStub do
+    def insert(log_entry), do: {:ok, log_entry}
+
     def list(filters) do
       run_id = filters[:run_id] || filters["run_id"]
       session_id = filters[:session_id] || filters["session_id"]
@@ -163,26 +190,82 @@ defmodule OcppSimulatorWeb.RouterAuthorizationTest do
     end
   end
 
+  defmodule IdGeneratorStub do
+    def generate("run"), do: "run-api-generated-1"
+    def generate(_namespace), do: "generated-id-1"
+  end
+
+  defmodule WebhookEndpointRepositoryStub do
+    def upsert(endpoint), do: {:ok, endpoint}
+
+    def list(_filters) do
+      {:ok,
+       %{
+         entries: [
+           %{
+             id: "wh-api-1",
+             name: "Webhook API",
+             url: "https://example.test/webhook",
+             events: ["run.succeeded"],
+             retry_policy: %{max_attempts: 2, backoff_ms: 100},
+             secret_ref: "whsec_test",
+             metadata: %{}
+           }
+         ],
+         page: 1,
+         page_size: 50,
+         total_entries: 1,
+         total_pages: 1
+       }}
+    end
+  end
+
   setup do
-    previous_charge_point_repository = Application.get_env(:ocpp_simulator, :charge_point_repository)
+    previous_charge_point_repository =
+      Application.get_env(:ocpp_simulator, :charge_point_repository)
+
     previous_target_endpoint_repository =
       Application.get_env(:ocpp_simulator, :target_endpoint_repository)
 
     previous_scenario_repository = Application.get_env(:ocpp_simulator, :scenario_repository)
     previous_template_repository = Application.get_env(:ocpp_simulator, :template_repository)
-    previous_scenario_run_repository = Application.get_env(:ocpp_simulator, :scenario_run_repository)
+
+    previous_scenario_run_repository =
+      Application.get_env(:ocpp_simulator, :scenario_run_repository)
+
     previous_log_repository = Application.get_env(:ocpp_simulator, :log_repository)
+    previous_id_generator = Application.get_env(:ocpp_simulator, :id_generator)
+
+    previous_webhook_endpoint_repository =
+      Application.get_env(:ocpp_simulator, :webhook_endpoint_repository)
 
     Application.put_env(:ocpp_simulator, :charge_point_repository, ChargePointRepositoryStub)
-    Application.put_env(:ocpp_simulator, :target_endpoint_repository, TargetEndpointRepositoryStub)
+
+    Application.put_env(
+      :ocpp_simulator,
+      :target_endpoint_repository,
+      TargetEndpointRepositoryStub
+    )
+
     Application.put_env(:ocpp_simulator, :scenario_repository, ScenarioRepositoryStub)
     Application.put_env(:ocpp_simulator, :template_repository, TemplateRepositoryStub)
     Application.put_env(:ocpp_simulator, :scenario_run_repository, ScenarioRunRepositoryStub)
     Application.put_env(:ocpp_simulator, :log_repository, LogRepositoryStub)
+    Application.put_env(:ocpp_simulator, :id_generator, IdGeneratorStub)
+
+    Application.put_env(
+      :ocpp_simulator,
+      :webhook_endpoint_repository,
+      WebhookEndpointRepositoryStub
+    )
 
     on_exit(fn ->
       if previous_charge_point_repository do
-        Application.put_env(:ocpp_simulator, :charge_point_repository, previous_charge_point_repository)
+        Application.put_env(
+          :ocpp_simulator,
+          :charge_point_repository,
+          previous_charge_point_repository
+        )
       else
         Application.delete_env(:ocpp_simulator, :charge_point_repository)
       end
@@ -210,7 +293,11 @@ defmodule OcppSimulatorWeb.RouterAuthorizationTest do
       end
 
       if previous_scenario_run_repository do
-        Application.put_env(:ocpp_simulator, :scenario_run_repository, previous_scenario_run_repository)
+        Application.put_env(
+          :ocpp_simulator,
+          :scenario_run_repository,
+          previous_scenario_run_repository
+        )
       else
         Application.delete_env(:ocpp_simulator, :scenario_run_repository)
       end
@@ -219,6 +306,22 @@ defmodule OcppSimulatorWeb.RouterAuthorizationTest do
         Application.put_env(:ocpp_simulator, :log_repository, previous_log_repository)
       else
         Application.delete_env(:ocpp_simulator, :log_repository)
+      end
+
+      if previous_id_generator do
+        Application.put_env(:ocpp_simulator, :id_generator, previous_id_generator)
+      else
+        Application.delete_env(:ocpp_simulator, :id_generator)
+      end
+
+      if previous_webhook_endpoint_repository do
+        Application.put_env(
+          :ocpp_simulator,
+          :webhook_endpoint_repository,
+          previous_webhook_endpoint_repository
+        )
+      else
+        Application.delete_env(:ocpp_simulator, :webhook_endpoint_repository)
       end
     end)
 
@@ -295,32 +398,48 @@ defmodule OcppSimulatorWeb.RouterAuthorizationTest do
 
   test "scenario builder shows field-level error when steps JSON is invalid" do
     {:ok, socket} =
-      OcppSimulatorWeb.ScenarioBuilderLive.mount(%{}, %{}, live_socket(%{current_role: :operator}))
+      OcppSimulatorWeb.ScenarioBuilderLive.mount(
+        %{},
+        %{},
+        live_socket(%{current_role: :operator})
+      )
 
     {:noreply, socket} =
-      OcppSimulatorWeb.ScenarioBuilderLive.handle_event("update_visual", %{
-        "scenario" => %{
-          "steps_json" => "{invalid-json"
-        }
-      }, socket)
+      OcppSimulatorWeb.ScenarioBuilderLive.handle_event(
+        "update_visual",
+        %{
+          "scenario" => %{
+            "steps_json" => "{invalid-json"
+          }
+        },
+        socket
+      )
 
     assert socket.assigns.field_errors[:steps] == "Steps must be valid JSON array format."
   end
 
   test "target endpoint create keeps inline validation errors for invalid form input" do
     {:ok, socket} =
-      OcppSimulatorWeb.TargetEndpointsLive.mount(%{}, %{}, live_socket(%{current_role: :operator}))
+      OcppSimulatorWeb.TargetEndpointsLive.mount(
+        %{},
+        %{},
+        live_socket(%{current_role: :operator})
+      )
 
     {:noreply, socket} =
-      OcppSimulatorWeb.TargetEndpointsLive.handle_event("create_endpoint", %{
-        "endpoint" => %{
-          "id" => "endpoint-invalid-1",
-          "name" => "Bad Endpoint",
-          "url" => "http://invalid-url",
-          "retry_max_attempts" => "0",
-          "retry_backoff_ms" => "0"
-        }
-      }, socket)
+      OcppSimulatorWeb.TargetEndpointsLive.handle_event(
+        "create_endpoint",
+        %{
+          "endpoint" => %{
+            "id" => "endpoint-invalid-1",
+            "name" => "Bad Endpoint",
+            "url" => "http://invalid-url",
+            "retry_max_attempts" => "0",
+            "retry_backoff_ms" => "0"
+          }
+        },
+        socket
+      )
 
     assert socket.assigns.endpoint_errors[:url] == "URL must use `ws://` in v1."
     assert socket.assigns.endpoint_errors[:retry_max_attempts] == "Must be a positive integer."
@@ -329,30 +448,40 @@ defmodule OcppSimulatorWeb.RouterAuthorizationTest do
   end
 
   test "logs live supports filter-first query and correlation drill-down" do
-    {:ok, socket} = OcppSimulatorWeb.LogsLive.mount(%{}, %{}, live_socket(%{current_role: :viewer}))
+    {:ok, socket} =
+      OcppSimulatorWeb.LogsLive.mount(%{}, %{}, live_socket(%{current_role: :viewer}))
+
     assert socket.assigns.feedback =~ "Apply at least one filter"
 
     {:noreply, filtered_socket} =
-      OcppSimulatorWeb.LogsLive.handle_event("filter", %{
-        "filters" => %{
-          "run_id" => "run-history-1",
-          "session_id" => "",
-          "message_id" => "",
-          "severity" => "",
-          "event_type" => "",
-          "page_size" => "50"
-        }
-      }, socket)
+      OcppSimulatorWeb.LogsLive.handle_event(
+        "filter",
+        %{
+          "filters" => %{
+            "run_id" => "run-history-1",
+            "session_id" => "",
+            "message_id" => "",
+            "severity" => "",
+            "event_type" => "",
+            "page_size" => "50"
+          }
+        },
+        socket
+      )
 
     assert length(filtered_socket.assigns.entries) == 1
     assert hd(filtered_socket.assigns.entries).run_id == "run-history-1"
 
     {:noreply, drilled_socket} =
-      OcppSimulatorWeb.LogsLive.handle_event("drill_filter", %{
-        "run_id" => "run-correlation-1",
-        "session_id" => "session-correlation-1",
-        "message_id" => "message-correlation-1"
-      }, filtered_socket)
+      OcppSimulatorWeb.LogsLive.handle_event(
+        "drill_filter",
+        %{
+          "run_id" => "run-correlation-1",
+          "session_id" => "session-correlation-1",
+          "message_id" => "message-correlation-1"
+        },
+        filtered_socket
+      )
 
     assert drilled_socket.assigns.filters.run_id == "run-correlation-1"
     assert drilled_socket.assigns.filters.session_id == "session-correlation-1"
@@ -363,51 +492,90 @@ defmodule OcppSimulatorWeb.RouterAuthorizationTest do
   end
 
   test "run history replay action shows replay entry feedback" do
-    {:ok, socket} = OcppSimulatorWeb.RunHistoryLive.mount(%{}, %{}, live_socket(%{current_role: :viewer}))
-    {:noreply, socket} = OcppSimulatorWeb.RunHistoryLive.handle_event("replay", %{"id" => "run-history-1"}, socket)
+    {:ok, socket} =
+      OcppSimulatorWeb.RunHistoryLive.mount(%{}, %{}, live_socket(%{current_role: :viewer}))
+
+    {:noreply, socket} =
+      OcppSimulatorWeb.RunHistoryLive.handle_event("replay", %{"id" => "run-history-1"}, socket)
+
     assert socket.assigns.replay_feedback =~ "Replay requested for run run-history-1"
   end
 
   test "api run start denies viewer role" do
     conn =
       build_conn()
-      |> post("/api/runs", %{})
+      |> post("/api/runs", %{"scenario_id" => "scn-api-export-1"})
 
-    assert %{"error" => %{"code" => "forbidden"}} = json_response(conn, 403)
+    assert %{"ok" => false, "error" => %{"code" => "forbidden"}} = json_response(conn, 403)
   end
 
   test "api run start allows operator role from session" do
     conn =
       build_conn()
       |> init_test_session(%{"current_role" => "operator"})
-      |> post("/api/runs", %{})
+      |> post("/api/runs", %{"scenario_id" => "scn-api-export-1"})
 
-    assert %{"data" => %{"resource" => "run", "status" => "accepted"}} = json_response(conn, 202)
+    assert %{
+             "ok" => true,
+             "data" => %{
+               "resource" => "run",
+               "id" => "run-api-generated-1",
+               "state" => "queued",
+               "execute_after_start" => %{"requested" => false}
+             }
+           } = json_response(conn, 202)
+  end
+
+  test "api run start remains accepted when execute_after_start is requested" do
+    conn =
+      build_conn()
+      |> init_test_session(%{"current_role" => "operator"})
+      |> post("/api/runs", %{
+        "scenario_id" => "scn-api-export-1",
+        "execute_after_start" => true,
+        "timeout_ms" => 500
+      })
+
+    assert %{
+             "ok" => true,
+             "data" => %{
+               "resource" => "run",
+               "execute_after_start" => %{"requested" => true, "scheduled" => true}
+             }
+           } = json_response(conn, 202)
   end
 
   test "api run start ignores untrusted role header by default" do
     conn =
       build_conn()
       |> put_req_header("x-ocpp-role", "operator")
-      |> post("/api/runs", %{})
+      |> post("/api/runs", %{"scenario_id" => "scn-api-export-1"})
 
-    assert %{"error" => %{"code" => "forbidden"}} = json_response(conn, 403)
+    assert %{"ok" => false, "error" => %{"code" => "forbidden"}} = json_response(conn, 403)
   end
 
   test "api management endpoints enforce role permissions" do
     operator_conn =
       build_conn()
       |> init_test_session(%{"current_role" => "operator"})
-      |> post("/api/charge-points", %{})
+      |> post("/api/charge-points", %{
+        "id" => "cp-api-1",
+        "vendor" => "Erdovi",
+        "model" => "SIM",
+        "firmware_version" => "1.0.0",
+        "connector_count" => 2,
+        "heartbeat_interval_seconds" => 60
+      })
 
-    assert %{"data" => %{"resource" => "charge_point"}} = json_response(operator_conn, 202)
+    assert %{"ok" => true, "data" => %{"resource" => "charge_point"}} =
+             json_response(operator_conn, 201)
 
     viewer_conn =
       build_conn()
       |> init_test_session(%{"current_role" => "viewer"})
       |> post("/api/charge-points", %{})
 
-    assert %{"error" => %{"code" => "forbidden"}} = json_response(viewer_conn, 403)
+    assert %{"ok" => false, "error" => %{"code" => "forbidden"}} = json_response(viewer_conn, 403)
   end
 
   test "api artifact export/import endpoints are role-gated and return structured data" do
@@ -416,7 +584,7 @@ defmodule OcppSimulatorWeb.RouterAuthorizationTest do
       |> init_test_session(%{"current_role" => "operator"})
       |> get("/api/scenarios/export")
 
-    assert %{"data" => %{"artifact" => "scenarios", "count" => 1}} =
+    assert %{"ok" => true, "data" => %{"artifact" => "scenarios", "count" => 1}} =
              json_response(export_conn, 200)
 
     import_conn =
@@ -435,7 +603,7 @@ defmodule OcppSimulatorWeb.RouterAuthorizationTest do
         ]
       })
 
-    assert %{"data" => %{"artifact" => "templates", "imported_count" => 1}} =
+    assert %{"ok" => true, "data" => %{"artifact" => "templates", "imported_count" => 1}} =
              json_response(import_conn, 201)
 
     forbidden_conn =
@@ -443,7 +611,54 @@ defmodule OcppSimulatorWeb.RouterAuthorizationTest do
       |> init_test_session(%{"current_role" => "viewer"})
       |> get("/api/templates/export")
 
-    assert %{"error" => %{"code" => "forbidden"}} = json_response(forbidden_conn, 403)
+    assert %{"ok" => false, "error" => %{"code" => "forbidden"}} =
+             json_response(forbidden_conn, 403)
+  end
+
+  test "api webhook endpoint config supports upsert and list for operator role" do
+    upsert_conn =
+      build_conn()
+      |> init_test_session(%{"current_role" => "operator"})
+      |> post("/api/webhooks/endpoints", %{
+        "id" => "wh-api-created-1",
+        "name" => "Run Events",
+        "url" => "https://example.test/webhook",
+        "events" => ["run.succeeded", "run.failed"],
+        "retry_policy" => %{"max_attempts" => 3, "backoff_ms" => 500},
+        "secret_ref" => "whsec_api",
+        "metadata" => %{"team" => "qa"}
+      })
+
+    assert %{"ok" => true, "data" => %{"resource" => "webhook_endpoint"}} =
+             json_response(upsert_conn, 201)
+
+    list_conn =
+      build_conn()
+      |> init_test_session(%{"current_role" => "operator"})
+      |> get("/api/webhooks/endpoints")
+
+    assert %{"ok" => true, "data" => %{"entries" => entries}} = json_response(list_conn, 200)
+    assert length(entries) == 1
+  end
+
+  test "api webhook endpoint config rejects invalid callback URL scheme" do
+    conn =
+      build_conn()
+      |> init_test_session(%{"current_role" => "operator"})
+      |> post("/api/webhooks/endpoints", %{
+        "id" => "wh-api-created-2",
+        "name" => "Run Events",
+        "url" => "ws://example.test/webhook",
+        "events" => ["run.succeeded"]
+      })
+
+    assert %{
+             "ok" => false,
+             "error" => %{
+               "code" => "invalid_field",
+               "details" => %{"field" => "url", "detail" => "must_be_http_or_https_url"}
+             }
+           } = json_response(conn, 422)
   end
 
   defp live_socket(assigns) when is_map(assigns) do

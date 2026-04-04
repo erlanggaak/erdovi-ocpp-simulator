@@ -63,4 +63,20 @@ config :ocpp_simulator,
 config :ocpp_simulator, :runtime,
   max_concurrent_runs: parse_positive_int.(System.get_env("MAX_CONCURRENT_RUNS"), 25),
   max_active_sessions: parse_positive_int.(System.get_env("MAX_ACTIVE_SESSIONS"), 200),
-  ws_retry_base_delay_ms: parse_positive_int.(System.get_env("WS_RETRY_BASE_DELAY_MS"), 1_000)
+  ws_retry_base_delay_ms: parse_positive_int.(System.get_env("WS_RETRY_BASE_DELAY_MS"), 1_000),
+  ws_max_reconnect_attempts:
+    parse_positive_int.(System.get_env("WS_MAX_RECONNECT_ATTEMPTS"), 3),
+  ws_outbound_max_queue_size:
+    parse_positive_int.(System.get_env("WS_OUTBOUND_MAX_QUEUE_SIZE"), 200),
+  ws_outbound_max_in_flight:
+    parse_positive_int.(System.get_env("WS_OUTBOUND_MAX_IN_FLIGHT"), 8),
+  ws_outbound_max_retry_attempts:
+    parse_positive_int.(System.get_env("WS_OUTBOUND_MAX_RETRY_ATTEMPTS"), 3),
+  ws_outbound_retry_base_delay_ms:
+    parse_positive_int.(System.get_env("WS_OUTBOUND_RETRY_BASE_DELAY_MS"), 200),
+  webhook_delivery_timeout_ms:
+    parse_positive_int.(System.get_env("WEBHOOK_DELIVERY_TIMEOUT_MS"), 5_000),
+  webhook_delivery_default_max_attempts:
+    parse_positive_int.(System.get_env("WEBHOOK_DELIVERY_DEFAULT_MAX_ATTEMPTS"), 3),
+  webhook_delivery_default_backoff_ms:
+    parse_positive_int.(System.get_env("WEBHOOK_DELIVERY_DEFAULT_BACKOFF_MS"), 1_000)

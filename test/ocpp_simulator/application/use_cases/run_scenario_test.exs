@@ -1,5 +1,5 @@
 defmodule OcppSimulator.Application.UseCases.RunScenarioTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias OcppSimulator.Application.UseCases.RunScenario
   alias OcppSimulator.Domain.Runs.ScenarioRun
@@ -238,6 +238,26 @@ defmodule OcppSimulator.Application.UseCases.RunScenarioTest do
     def generate("run"), do: "run-generated-1"
   end
 
+  defmodule ScenarioRunRepositoryConcurrencyStub do
+    def list_history(_filters) do
+      {:ok, %{entries: [], page: 1, page_size: 1, total_entries: 1, total_pages: 1}}
+    end
+
+    def insert(run), do: {:ok, run}
+  end
+
+  defmodule ScenarioRunRepositoryConcurrencyProbeStub do
+    def list_history(filters) do
+      if pid = Process.get(:run_scenario_probe_pid) do
+        send(pid, {:concurrency_probe_filters, filters})
+      end
+
+      {:ok, %{entries: [], page: 1, page_size: 1, total_entries: 25, total_pages: 25}}
+    end
+
+    def insert(run), do: {:ok, run}
+  end
+
   defmodule WebhookDispatcherStub do
     def dispatch_run_event(event, run, metadata) do
       send(self(), {:webhook_dispatched, event, run.id, metadata})
@@ -274,6 +294,48 @@ defmodule OcppSimulator.Application.UseCases.RunScenarioTest do
 
     assert :scenario_has_no_steps in errors
     assert :no_enabled_steps in errors
+  end
+
+  test "start_run/3 enforces max concurrent runs limit" do
+    previous_runtime = Application.get_env(:ocpp_simulator, :runtime)
+    Application.put_env(:ocpp_simulator, :runtime, max_concurrent_runs: 1)
+
+    on_exit(fn ->
+      if previous_runtime do
+        Application.put_env(:ocpp_simulator, :runtime, previous_runtime)
+      else
+        Application.delete_env(:ocpp_simulator, :runtime)
+      end
+    end)
+
+    deps = %{
+      scenario_repository: ScenarioRepositoryStub,
+      scenario_run_repository: ScenarioRunRepositoryConcurrencyStub,
+      id_generator: IdGeneratorStub
+    }
+
+    assert {:error, {:concurrency_limit_reached, 1}} =
+             RunScenario.start_run(deps, %{scenario_id: "scn-ready"}, :operator)
+  end
+
+  test "start_run/3 uses bounded history query shape for concurrency enforcement" do
+    Process.put(:run_scenario_probe_pid, self())
+
+    on_exit(fn ->
+      Process.delete(:run_scenario_probe_pid)
+    end)
+
+    deps = %{
+      scenario_repository: ScenarioRepositoryStub,
+      scenario_run_repository: ScenarioRunRepositoryConcurrencyProbeStub,
+      id_generator: IdGeneratorStub
+    }
+
+    assert {:error, {:concurrency_limit_reached, 25}} =
+             RunScenario.start_run(deps, %{scenario_id: "scn-ready"}, :operator)
+
+    assert_receive {:concurrency_probe_filters,
+                    %{states: [:queued, :running], page: 1, page_size: 1}}
   end
 
   test "execute_run/4 succeeds and persists step-level results" do

@@ -6,6 +6,7 @@ defmodule OcppSimulatorWeb.Auth.CurrentRolePlug do
   import Plug.Conn
 
   alias OcppSimulator.Application.Policies.AuthorizationPolicy
+  alias OcppSimulator.Infrastructure.Observability.StructuredLogger
 
   @type source :: :session | :header | :header_or_session
 
@@ -27,6 +28,15 @@ defmodule OcppSimulatorWeb.Auth.CurrentRolePlug do
       source
       |> fetch_role_value(conn, allow_untrusted_role_header)
       |> normalize_role()
+
+    StructuredLogger.info("auth.role_resolved", %{
+      persist: true,
+      run_id: "system",
+      event: "role_resolved",
+      path: conn.request_path,
+      source: source,
+      role: role
+    })
 
     assign(conn, :current_role, role)
   end

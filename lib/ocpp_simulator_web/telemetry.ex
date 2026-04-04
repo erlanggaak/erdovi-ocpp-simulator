@@ -42,7 +42,11 @@ defmodule OcppSimulatorWeb.Telemetry do
       [:ocpp_simulator, :runtime, :limits],
       %{
         max_concurrent_runs: runtime[:max_concurrent_runs],
-        max_active_sessions: runtime[:max_active_sessions]
+        max_active_sessions: runtime[:max_active_sessions],
+        ws_max_reconnect_attempts: runtime[:ws_max_reconnect_attempts],
+        ws_outbound_max_queue_size: runtime[:ws_outbound_max_queue_size],
+        ws_outbound_max_in_flight: runtime[:ws_outbound_max_in_flight],
+        webhook_delivery_timeout_ms: runtime[:webhook_delivery_timeout_ms]
       },
       %{}
     )

@@ -6,6 +6,8 @@ defmodule OcppSimulatorWeb.Auth.RequirePermissionPlug do
   import Plug.Conn
 
   alias OcppSimulator.Application.Policies.AuthorizationPolicy
+  alias OcppSimulator.Infrastructure.Observability.StructuredLogger
+  alias OcppSimulatorWeb.Api.Response
 
   @spec init(keyword()) :: atom()
   def init(opts), do: Keyword.fetch!(opts, :permission)
@@ -19,26 +21,40 @@ defmodule OcppSimulatorWeb.Auth.RequirePermissionPlug do
         conn
 
       {:error, :forbidden} ->
+        StructuredLogger.warn("auth.permission_denied", %{
+          persist: true,
+          run_id: "system",
+          event: "permission_denied",
+          permission: permission,
+          role: role,
+          path: conn.request_path
+        })
+
         forbid(conn, permission)
 
       {:error, reason} ->
+        StructuredLogger.warn("auth.permission_denied", %{
+          persist: true,
+          run_id: "system",
+          event: "permission_denied",
+          permission: permission,
+          role: role,
+          path: conn.request_path,
+          reason: inspect(reason)
+        })
+
         forbid(conn, permission, reason)
     end
   end
 
   defp forbid(conn, permission, reason \\ :forbidden) do
-    body =
-      Jason.encode!(%{
-        error: %{
-          code: "forbidden",
-          permission: to_string(permission),
-          reason: inspect(reason)
-        }
-      })
-
     conn
-    |> put_resp_content_type("application/json")
-    |> send_resp(:forbidden, body)
+    |> Response.error(
+      :forbidden,
+      "forbidden",
+      "You do not have permission.",
+      %{permission: to_string(permission), reason: inspect(reason)}
+    )
     |> halt()
   end
 end

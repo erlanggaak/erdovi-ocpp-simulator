@@ -9,6 +9,8 @@ defmodule OcppSimulator.Application.Contracts.LogRepository do
           optional(:session_id) => String.t(),
           optional(:charge_point_id) => String.t(),
           optional(:message_id) => String.t(),
+          optional(:action) => String.t(),
+          optional(:step_id) => String.t(),
           required(:severity) => String.t(),
           required(:event_type) => String.t(),
           required(:payload) => map(),

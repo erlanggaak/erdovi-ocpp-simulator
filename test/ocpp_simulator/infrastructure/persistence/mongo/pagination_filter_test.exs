@@ -116,13 +116,71 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.PaginationFilterTest do
     assert Enum.at(page.entries, 0).id == "log-a"
   end
 
+  test "history and logs queries stay within baseline latency under larger in-memory datasets" do
+    scenario = build_scenario!("scn-perf-1")
+    base = ~U[2026-04-02 09:00:00Z]
+
+    Enum.each(1..250, fn index ->
+      run =
+        build_run!("run-perf-#{index}", scenario)
+        |> Map.put(:created_at, DateTime.add(base, index, :second))
+
+      assert {:ok, _} = ScenarioRunRepository.insert(run)
+    end)
+
+    Enum.each(1..300, fn index ->
+      assert {:ok, _} =
+               LogRepository.insert(%{
+                 id: "log-perf-#{index}",
+                 run_id: if(rem(index, 2) == 0, do: "run-perf-focus", else: "run-perf-other"),
+                 session_id: "session-perf-#{index}",
+                 severity: "info",
+                 event_type: "scenario.run.executed",
+                 payload: %{},
+                 timestamp: DateTime.add(base, index, :second)
+               })
+    end)
+
+    started_history = System.monotonic_time(:millisecond)
+
+    assert {:ok, history_page} =
+             ScenarioRunRepository.list_history(%{
+               scenario_id: "scn-perf-1",
+               page: 1,
+               page_size: 50
+             })
+
+    history_elapsed_ms = System.monotonic_time(:millisecond) - started_history
+
+    assert history_page.total_entries == 250
+    assert length(history_page.entries) == 50
+    assert history_elapsed_ms < 500
+
+    started_logs = System.monotonic_time(:millisecond)
+
+    assert {:ok, logs_page} =
+             LogRepository.list(%{
+               run_id: "run-perf-focus",
+               page: 1,
+               page_size: 50
+             })
+
+    logs_elapsed_ms = System.monotonic_time(:millisecond) - started_logs
+
+    assert logs_page.total_entries == 150
+    assert length(logs_page.entries) == 50
+    assert logs_elapsed_ms < 500
+  end
+
   defp build_scenario!(id) do
     {:ok, scenario} =
       Scenario.new(%{
         id: id,
         name: "Scenario #{id}",
         version: "1.0.0",
-        steps: [%{id: "boot", type: :send_action, order: 1, payload: %{"action" => "BootNotification"}}]
+        steps: [
+          %{id: "boot", type: :send_action, order: 1, payload: %{"action" => "BootNotification"}}
+        ]
       })
 
     scenario

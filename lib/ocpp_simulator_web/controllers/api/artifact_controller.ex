@@ -3,6 +3,8 @@ defmodule OcppSimulatorWeb.Api.ArtifactController do
 
   alias OcppSimulator.Application.UseCases.ImportExportArtifacts
   alias OcppSimulator.Application.UseCases.StarterTemplates
+  alias OcppSimulator.Infrastructure.Observability.StructuredLogger
+  alias OcppSimulatorWeb.Api.Response
 
   plug(OcppSimulatorWeb.Auth.RequirePermissionPlug, permission: :api_automation)
 
@@ -13,12 +15,17 @@ defmodule OcppSimulatorWeb.Api.ArtifactController do
            params
          ) do
       {:ok, bundle} ->
-        conn
-        |> put_status(:ok)
-        |> json(%{data: bundle})
+        StructuredLogger.info("api.artifacts.scenarios.exported", %{
+          persist: true,
+          run_id: "system",
+          action: "export_scenarios",
+          payload: %{count: bundle.count}
+        })
+
+        Response.success(conn, :ok, bundle)
 
       {:error, reason} ->
-        render_error(conn, reason)
+        Response.from_reason(conn, reason)
     end
   end
 
@@ -29,12 +36,17 @@ defmodule OcppSimulatorWeb.Api.ArtifactController do
            params
          ) do
       {:ok, result} ->
-        conn
-        |> put_status(:created)
-        |> json(%{data: result})
+        StructuredLogger.info("api.artifacts.scenarios.imported", %{
+          persist: true,
+          run_id: "system",
+          action: "import_scenarios",
+          payload: %{imported_count: result.imported_count}
+        })
+
+        Response.success(conn, :created, result)
 
       {:error, reason} ->
-        render_error(conn, reason)
+        Response.from_reason(conn, reason)
     end
   end
 
@@ -45,12 +57,17 @@ defmodule OcppSimulatorWeb.Api.ArtifactController do
            params
          ) do
       {:ok, bundle} ->
-        conn
-        |> put_status(:ok)
-        |> json(%{data: bundle})
+        StructuredLogger.info("api.artifacts.templates.exported", %{
+          persist: true,
+          run_id: "system",
+          action: "export_templates",
+          payload: %{count: bundle.count}
+        })
+
+        Response.success(conn, :ok, bundle)
 
       {:error, reason} ->
-        render_error(conn, reason)
+        Response.from_reason(conn, reason)
     end
   end
 
@@ -61,12 +78,17 @@ defmodule OcppSimulatorWeb.Api.ArtifactController do
            params
          ) do
       {:ok, result} ->
-        conn
-        |> put_status(:created)
-        |> json(%{data: result})
+        StructuredLogger.info("api.artifacts.templates.imported", %{
+          persist: true,
+          run_id: "system",
+          action: "import_templates",
+          payload: %{imported_count: result.imported_count}
+        })
+
+        Response.success(conn, :created, result)
 
       {:error, reason} ->
-        render_error(conn, reason)
+        Response.from_reason(conn, reason)
     end
   end
 
@@ -76,14 +98,21 @@ defmodule OcppSimulatorWeb.Api.ArtifactController do
            current_role(conn)
          ) do
       {:ok, entries} ->
-        conn
-        |> put_status(:created)
-        |> json(%{
-          data: %{artifact: "templates", imported_count: length(entries), entries: entries}
+        StructuredLogger.info("api.artifacts.templates.starter_seeded", %{
+          persist: true,
+          run_id: "system",
+          action: "seed_starter_templates",
+          payload: %{imported_count: length(entries)}
+        })
+
+        Response.success(conn, :created, %{
+          artifact: "templates",
+          imported_count: length(entries),
+          entries: entries
         })
 
       {:error, reason} ->
-        render_error(conn, reason)
+        Response.from_reason(conn, reason)
     end
   end
 
@@ -103,11 +132,5 @@ defmodule OcppSimulatorWeb.Api.ArtifactController do
       :template_repository,
       OcppSimulator.Infrastructure.Persistence.Mongo.TemplateRepository
     )
-  end
-
-  defp render_error(conn, reason) do
-    conn
-    |> put_status(:unprocessable_entity)
-    |> json(%{error: %{code: "invalid_request", reason: inspect(reason)}})
   end
 end

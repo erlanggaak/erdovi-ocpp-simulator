@@ -16,7 +16,7 @@ defmodule OcppSimulatorWeb.Router do
   pipeline :api do
     plug(:accepts, ["json"])
     plug(:fetch_session)
-    plug(CurrentRolePlug, source: :session)
+    plug(CurrentRolePlug, source: :header_or_session)
   end
 
   scope "/", OcppSimulatorWeb do
@@ -93,6 +93,8 @@ defmodule OcppSimulatorWeb.Router do
     get("/templates/export", ArtifactController, :export_templates)
     post("/templates/import", ArtifactController, :import_templates)
     post("/templates/starter", ArtifactController, :seed_starter_templates)
+    get("/webhooks/endpoints", WebhookEndpointController, :index)
+    post("/webhooks/endpoints", WebhookEndpointController, :upsert)
 
     post("/runs", RunController, :create)
     post("/runs/:id/cancel", RunController, :cancel)

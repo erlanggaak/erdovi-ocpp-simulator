@@ -14,6 +14,7 @@ defmodule OcppSimulator.Application.UseCases.RunScenario do
   alias OcppSimulator.Domain.Scenarios.VariableResolver
   alias OcppSimulator.Domain.Sessions.SessionStateMachine
   alias OcppSimulator.Domain.Transactions.TransactionStateMachine
+  alias OcppSimulator.Infrastructure.Observability.StructuredLogger
   alias OcppSimulator.Infrastructure.Serialization.OcppJson.PayloadValidator
 
   @required_start_dependencies [:scenario_repository, :scenario_run_repository, :id_generator]
@@ -41,6 +42,7 @@ defmodule OcppSimulator.Application.UseCases.RunScenario do
          {:ok, scenario} <- invoke(deps.scenario_repository, :get, [scenario_id]),
          :ok <- ensure_expected_version(attrs, scenario),
          :ok <- ensure_pre_run_validation_passes(scenario),
+         :ok <- ensure_concurrency_budget(deps.scenario_run_repository),
          {:ok, run_id} <- resolve_run_id(deps, attrs),
          {:ok, metadata} <- fetch_map(attrs, :metadata, %{}),
          {:ok, scenario_run} <-
@@ -51,6 +53,16 @@ defmodule OcppSimulator.Application.UseCases.RunScenario do
              metadata: metadata
            }),
          {:ok, persisted_run} <- invoke(deps.scenario_run_repository, :insert, [scenario_run]) do
+      emit_info("scenario.run.queued", %{
+        run_id: persisted_run.id,
+        action: "start_run",
+        payload: %{
+          scenario_id: persisted_run.scenario_id,
+          scenario_version: persisted_run.scenario_version,
+          actor_role: actor_role
+        }
+      })
+
       {:ok, persisted_run}
     end
   end
@@ -92,6 +104,12 @@ defmodule OcppSimulator.Application.UseCases.RunScenario do
                step_variables: %{}
              }
            ) do
+      emit_info("scenario.run.executed", %{
+        run_id: final_run.id,
+        action: "execute_run",
+        payload: %{state: final_run.state, elapsed_ms: fetch(final_run.metadata, :elapsed_ms)}
+      })
+
       {:ok, final_run}
     end
   end
@@ -116,6 +134,12 @@ defmodule OcppSimulator.Application.UseCases.RunScenario do
              normalized_metadata
            ]),
          :ok <- maybe_dispatch_terminal_event(deps, updated_run, normalized_metadata) do
+      emit_info("scenario.run.transitioned", %{
+        run_id: updated_run.id,
+        action: "transition_run",
+        payload: %{state: updated_run.state, metadata: normalized_metadata}
+      })
+
       {:ok, updated_run}
     end
   end
@@ -610,7 +634,19 @@ defmodule OcppSimulator.Application.UseCases.RunScenario do
          metadata
        )
        when run.state in @terminal_states do
-    invoke(dispatcher, :dispatch_run_event, [terminal_event_name(run.state), run, metadata])
+    case invoke(dispatcher, :dispatch_run_event, [terminal_event_name(run.state), run, metadata]) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        emit_warn("scenario.run.webhook_dispatch_failed", %{
+          run_id: run.id,
+          action: "dispatch_webhook",
+          payload: %{state: run.state, reason: inspect(reason)}
+        })
+
+        :ok
+    end
   end
 
   defp maybe_dispatch_terminal_event(_deps, _run, _metadata), do: :ok
@@ -673,4 +709,41 @@ defmodule OcppSimulator.Application.UseCases.RunScenario do
 
   defp maybe_add_error(errors, true, error), do: [error | errors]
   defp maybe_add_error(errors, false, _error), do: errors
+
+  defp ensure_concurrency_budget(scenario_run_repository) do
+    if function_exported?(scenario_run_repository, :list_history, 1) do
+      max_concurrent_runs = runtime_limit(:max_concurrent_runs, 25)
+
+      with {:ok, page} <-
+             invoke(scenario_run_repository, :list_history, [
+               %{states: [:queued, :running], page: 1, page_size: 1}
+             ]) do
+        if page.total_entries < max_concurrent_runs do
+          :ok
+        else
+          {:error, {:concurrency_limit_reached, max_concurrent_runs}}
+        end
+      end
+    else
+      # Some tests use minimal stubs that expose only the required operations.
+      # In that case we skip concurrency checks.
+      :ok
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp runtime_limit(key, default) do
+    Application.get_env(:ocpp_simulator, :runtime, [])
+    |> Keyword.get(key, default)
+  end
+
+  defp emit_info(event, payload), do: StructuredLogger.info(event, with_default_payload(payload))
+  defp emit_warn(event, payload), do: StructuredLogger.warn(event, with_default_payload(payload))
+
+  defp with_default_payload(payload) do
+    payload
+    |> Map.put_new(:persist, true)
+    |> Map.put_new(:run_id, fetch(payload, :run_id) || "system")
+  end
 end

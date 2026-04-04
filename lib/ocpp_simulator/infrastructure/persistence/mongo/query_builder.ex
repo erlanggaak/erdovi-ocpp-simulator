@@ -76,6 +76,8 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.QueryBuilder do
          {:ok, session_id} <- optional_string(filters, :session_id),
          {:ok, charge_point_id} <- optional_string(filters, :charge_point_id),
          {:ok, message_id} <- optional_string(filters, :message_id),
+         {:ok, action} <- optional_string(filters, :action),
+         {:ok, step_id} <- optional_string(filters, :step_id),
          {:ok, event_type} <- optional_string(filters, :event_type),
          {:ok, severity} <- optional_string(filters, :severity),
          {:ok, timestamp_range} <- datetime_range_filter(filters, :from, :to, "timestamp") do
@@ -85,6 +87,8 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.QueryBuilder do
         |> maybe_put("session_id", session_id)
         |> maybe_put("charge_point_id", charge_point_id)
         |> maybe_put("message_id", message_id)
+        |> maybe_put("action", action)
+        |> maybe_put("step_id", step_id)
         |> maybe_put("event_type", event_type)
         |> maybe_put("severity", severity)
         |> maybe_put("timestamp", timestamp_range)

@@ -11,6 +11,7 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
   alias OcppSimulator.Domain.Ocpp.Message
   alias OcppSimulator.Domain.Sessions.MessageIdRegistry
   alias OcppSimulator.Domain.Sessions.SessionStateMachine
+  alias OcppSimulator.Infrastructure.Observability.StructuredLogger
   alias OcppSimulator.Infrastructure.Serialization.OcppJson
   alias OcppSimulator.Infrastructure.Serialization.OcppJson.PayloadValidator
   alias OcppSimulator.Infrastructure.Transport.WebSocket.NoopAdapter
@@ -60,9 +61,17 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
       :sessions,
       :retry_base_delay_ms,
       :max_reconnect_attempts,
+      :max_active_sessions,
       :queue_opts
     ]
-    defstruct [:adapter, :sessions, :retry_base_delay_ms, :max_reconnect_attempts, :queue_opts]
+    defstruct [
+      :adapter,
+      :sessions,
+      :retry_base_delay_ms,
+      :max_reconnect_attempts,
+      :max_active_sessions,
+      :queue_opts
+    ]
   end
 
   @type inbound_result ::
@@ -79,7 +88,8 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
   end
 
   @impl OcppSimulator.Application.Contracts.TransportGateway
-  def connect(session_id, endpoint_profile) when is_binary(session_id) and is_map(endpoint_profile) do
+  def connect(session_id, endpoint_profile)
+      when is_binary(session_id) and is_map(endpoint_profile) do
     GenServer.call(__MODULE__, {:connect, session_id, endpoint_profile})
   end
 
@@ -124,19 +134,62 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
     runtime = Application.get_env(:ocpp_simulator, :runtime, [])
 
     retry_base_delay_ms =
-      Keyword.get(opts, :retry_base_delay_ms, Keyword.get(runtime, :ws_retry_base_delay_ms, 1_000))
+      Keyword.get(
+        opts,
+        :retry_base_delay_ms,
+        Keyword.get(runtime, :ws_retry_base_delay_ms, 1_000)
+      )
 
     state = %State{
-      adapter: Keyword.get(opts, :adapter, Application.get_env(:ocpp_simulator, :ocpp_transport_adapter, NoopAdapter)),
+      adapter:
+        Keyword.get(
+          opts,
+          :adapter,
+          Application.get_env(:ocpp_simulator, :ocpp_transport_adapter, NoopAdapter)
+        ),
       sessions: %{},
       retry_base_delay_ms: retry_base_delay_ms,
-      max_reconnect_attempts: Keyword.get(opts, :max_reconnect_attempts, @default_max_reconnect_attempts),
+      max_reconnect_attempts:
+        Keyword.get(
+          opts,
+          :max_reconnect_attempts,
+          Keyword.get(runtime, :ws_max_reconnect_attempts, @default_max_reconnect_attempts)
+        ),
+      max_active_sessions:
+        Keyword.get(
+          opts,
+          :max_active_sessions,
+          Keyword.get(runtime, :max_active_sessions, 200)
+        ),
       queue_opts: %{
-        max_queue_size: Keyword.get(opts, :max_queue_size, @default_max_queue_size),
-        max_in_flight: Keyword.get(opts, :max_in_flight, @default_max_in_flight),
-        max_retry_attempts: Keyword.get(opts, :max_queue_retry_attempts, @default_max_queue_retry_attempts),
+        max_queue_size:
+          Keyword.get(
+            opts,
+            :max_queue_size,
+            Keyword.get(runtime, :ws_outbound_max_queue_size, @default_max_queue_size)
+          ),
+        max_in_flight:
+          Keyword.get(
+            opts,
+            :max_in_flight,
+            Keyword.get(runtime, :ws_outbound_max_in_flight, @default_max_in_flight)
+          ),
+        max_retry_attempts:
+          Keyword.get(
+            opts,
+            :max_queue_retry_attempts,
+            Keyword.get(
+              runtime,
+              :ws_outbound_max_retry_attempts,
+              @default_max_queue_retry_attempts
+            )
+          ),
         retry_base_delay_ms:
-          Keyword.get(opts, :queue_retry_base_delay_ms, retry_base_delay_ms)
+          Keyword.get(
+            opts,
+            :queue_retry_base_delay_ms,
+            Keyword.get(runtime, :ws_outbound_retry_base_delay_ms, retry_base_delay_ms)
+          )
       }
     }
 
@@ -145,15 +198,37 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
 
   @impl true
   def handle_call({:connect, session_id, endpoint_profile}, _from, %State{} = state) do
-    with {:ok, entry} <- ensure_session_entry(state, session_id, endpoint_profile),
+    with :ok <- ensure_session_capacity(state, session_id),
+         {:ok, entry} <- ensure_session_entry(state, session_id, endpoint_profile),
          {:ok, updated_entry} <- attempt_connect(entry, state) do
+      StructuredLogger.info("session.connected", %{
+        persist: true,
+        session_id: session_id,
+        event: "connect"
+      })
+
       {:reply, :ok, put_entry(state, updated_entry)}
     else
       {:error, reason, entry} ->
         failed_entry = schedule_reconnect(%{entry | last_error: reason}, state)
+
+        StructuredLogger.warn("session.connect_failed", %{
+          persist: true,
+          session_id: session_id,
+          event: "connect_failed",
+          reason: inspect(reason)
+        })
+
         {:reply, {:error, {:connect_failed, reason}}, put_entry(state, failed_entry)}
 
       {:error, reason} ->
+        StructuredLogger.warn("session.connect_rejected", %{
+          persist: true,
+          session_id: session_id,
+          event: "connect_rejected",
+          reason: inspect(reason)
+        })
+
         {:reply, {:error, reason}, state}
     end
   end
@@ -175,6 +250,13 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
           |> Map.put(:last_error, nil)
           |> transition_session(:disconnected, %{event: "disconnect", reason: inspect(reason)})
 
+        StructuredLogger.info("session.disconnected", %{
+          persist: true,
+          session_id: session_id,
+          event: "disconnect",
+          reason: inspect(reason)
+        })
+
         {:reply, adapter_result, put_entry(state, updated_entry)}
     end
   end
@@ -192,7 +274,9 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
           {:reply, :ok, put_entry(state, connected_entry)}
 
         {:error, connect_reason, failed_entry} ->
-          scheduled_entry = schedule_reconnect(%{failed_entry | last_error: connect_reason}, state)
+          scheduled_entry =
+            schedule_reconnect(%{failed_entry | last_error: connect_reason}, state)
+
           {:reply, {:error, {:connect_failed, connect_reason}}, put_entry(state, scheduled_entry)}
       end
     else
@@ -209,12 +293,30 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
          :ok <- OutboundQueue.enqueue(queue_pid, outbound_message) do
       updated_entry =
         tracked_entry
-        |> transition_session(:active, %{event: "send_message", message_id: outbound_message.message_id})
+        |> transition_session(:active, %{
+          event: "send_message",
+          message_id: outbound_message.message_id
+        })
         |> Map.put(:last_error, nil)
+
+      StructuredLogger.info("protocol.outbound_queued", %{
+        persist: true,
+        session_id: session_id,
+        message_id: outbound_message.message_id,
+        action: outbound_message.action,
+        event: "send_message"
+      })
 
       {:reply, :ok, put_entry(state, updated_entry)}
     else
       {:error, reason} ->
+        StructuredLogger.warn("protocol.outbound_rejected", %{
+          persist: true,
+          session_id: session_id,
+          event: "send_message_rejected",
+          reason: inspect(reason)
+        })
+
         {:reply, {:error, reason}, state}
     end
   end
@@ -233,27 +335,70 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
               |> Map.put(:remote_context, updated_context)
               |> transition_session(:active, %{event: "inbound_call", action: message.action})
 
+            StructuredLogger.info("protocol.inbound_call", %{
+              persist: true,
+              session_id: session_id,
+              message_id: message.message_id,
+              action: message.action,
+              event: "inbound_call"
+            })
+
             reply = %{message: message, response: response}
             {:reply, {:ok, reply}, put_entry(state, updated_entry)}
           else
             {:error, reason} ->
+              StructuredLogger.warn("protocol.inbound_call_failed", %{
+                persist: true,
+                session_id: session_id,
+                message_id: message.message_id,
+                action: message.action,
+                reason: inspect(reason)
+              })
+
               {:reply, {:error, reason}, state}
           end
 
         response_type when response_type in [:call_result, :call_error] ->
           with {:ok, event, policy} <-
-                 CorrelationPolicy.correlate_response(entry_with_queue.correlation_policy, message),
-               :ok <- PayloadValidator.validate_message(message, request_action: event.request_action) do
+                 CorrelationPolicy.correlate_response(
+                   entry_with_queue.correlation_policy,
+                   message
+                 ),
+               :ok <-
+                 PayloadValidator.validate_message(message, request_action: event.request_action) do
             updated_entry = %{entry_with_queue | correlation_policy: policy, last_error: nil}
+
+            StructuredLogger.info("protocol.inbound_response", %{
+              persist: true,
+              session_id: session_id,
+              message_id: message.message_id,
+              action: message.action,
+              event: "inbound_response"
+            })
+
             reply = %{message: message, correlation_event: event}
             {:reply, {:ok, reply}, put_entry(state, updated_entry)}
           else
             {:error, reason} ->
+              StructuredLogger.warn("protocol.inbound_response_failed", %{
+                persist: true,
+                session_id: session_id,
+                message_id: message.message_id,
+                action: message.action,
+                reason: inspect(reason)
+              })
+
               {:reply, {:error, reason}, state}
           end
       end
     else
       {:error, reason} ->
+        StructuredLogger.warn("protocol.inbound_rejected", %{
+          persist: true,
+          session_id: session_id,
+          reason: inspect(reason)
+        })
+
         {:reply, {:error, reason}, state}
     end
   end
@@ -323,7 +468,8 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
     with :ok <- ensure_endpoint_profile(entry.endpoint_profile),
          :ok <- state.adapter.connect(entry.id, entry.endpoint_profile),
          {:ok, _queue_pid, with_queue} <- ensure_queue(entry, state),
-         {:ok, updated_policy} <- CorrelationPolicy.new(timeout_ms: entry.correlation_policy.timeout_ms) do
+         {:ok, updated_policy} <-
+           CorrelationPolicy.new(timeout_ms: entry.correlation_policy.timeout_ms) do
       connected_entry =
         with_queue
         |> Map.put(:correlation_policy, updated_policy)
@@ -345,10 +491,22 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
     end
   end
 
+  defp ensure_session_capacity(%State{} = state, session_id) do
+    if Map.has_key?(state.sessions, session_id) or
+         map_size(state.sessions) < state.max_active_sessions do
+      :ok
+    else
+      {:error, {:capacity_reached, :max_active_sessions}}
+    end
+  end
+
   defp fetch_or_build_entry(%State{} = state, session_id, endpoint_profile) do
     case fetch_entry(state, session_id) do
-      {:ok, entry} -> {:ok, %{entry | endpoint_profile: endpoint_profile}}
-      {:error, :not_found} -> build_entry(session_id, endpoint_profile, state.max_reconnect_attempts)
+      {:ok, entry} ->
+        {:ok, %{entry | endpoint_profile: endpoint_profile}}
+
+      {:error, :not_found} ->
+        build_entry(session_id, endpoint_profile, state.max_reconnect_attempts)
     end
   end
 
@@ -402,9 +560,14 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
       ]
 
       case start_queue_child(queue_opts) do
-        {:ok, queue_pid} -> {:ok, queue_pid, %{entry | queue_pid: queue_pid}}
-        {:error, {:already_started, queue_pid}} -> {:ok, queue_pid, %{entry | queue_pid: queue_pid}}
-        {:error, reason} -> {:error, {:queue_start_failed, reason}}
+        {:ok, queue_pid} ->
+          {:ok, queue_pid, %{entry | queue_pid: queue_pid}}
+
+        {:error, {:already_started, queue_pid}} ->
+          {:ok, queue_pid, %{entry | queue_pid: queue_pid}}
+
+        {:error, reason} ->
+          {:error, {:queue_start_failed, reason}}
       end
     end
   end
@@ -448,7 +611,8 @@ defmodule OcppSimulator.Infrastructure.Transport.WebSocket.SessionManager do
     do: {:error, {:invalid_field, :message, :must_be_outbound_or_unspecified_direction}}
 
   defp track_outbound_message(%SessionEntry{} = entry, %Message{type: :call} = message) do
-    with {:ok, updated_registry} <- MessageIdRegistry.register(entry.message_registry, message.message_id),
+    with {:ok, updated_registry} <-
+           MessageIdRegistry.register(entry.message_registry, message.message_id),
          {:ok, updated_policy} <- CorrelationPolicy.track_call(entry.correlation_policy, message) do
       {:ok, %{entry | message_registry: updated_registry, correlation_policy: updated_policy}}
     end

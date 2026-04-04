@@ -185,7 +185,8 @@ defmodule OcppSimulatorWeb.RunHistoryLive do
       scenario_id: LiveData.normalize_filter(raw_filters, :scenario_id) || "",
       state: LiveData.normalize_filter(raw_filters, :state) || "",
       page: existing_filters.page,
-      page_size: parse_positive_integer(Map.get(raw_filters, "page_size"), existing_filters.page_size)
+      page_size:
+        parse_positive_integer(Map.get(raw_filters, "page_size"), existing_filters.page_size)
     }
   end
 
@@ -208,8 +209,15 @@ defmodule OcppSimulatorWeb.RunHistoryLive do
   end
 
   defp extract_failure_reason(metadata) when is_map(metadata) do
-    Map.get(metadata, :failure_reason) || Map.get(metadata, "failure_reason") || "-"
+    metadata
+    |> Map.get(:failure_reason, Map.get(metadata, "failure_reason"))
+    |> normalize_failure_reason()
   end
 
   defp extract_failure_reason(_metadata), do: "-"
+
+  defp normalize_failure_reason(nil), do: "-"
+  defp normalize_failure_reason(value) when is_binary(value), do: value
+  defp normalize_failure_reason(value) when is_atom(value), do: Atom.to_string(value)
+  defp normalize_failure_reason(value), do: inspect(value)
 end

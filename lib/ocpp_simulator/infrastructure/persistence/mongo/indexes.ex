@@ -45,7 +45,11 @@ defmodule OcppSimulator.Infrastructure.Persistence.Mongo.Indexes do
         key: %{"charge_point_id" => 1, "timestamp" => -1},
         name: "logs_charge_point_timestamp_idx"
       ],
-      [key: %{"message_id" => 1, "timestamp" => -1}, name: "logs_message_timestamp_idx"]
+      [key: %{"message_id" => 1, "timestamp" => -1}, name: "logs_message_timestamp_idx"],
+      [key: %{"event_type" => 1, "timestamp" => -1}, name: "logs_event_type_timestamp_idx"],
+      [key: %{"severity" => 1, "timestamp" => -1}, name: "logs_severity_timestamp_idx"],
+      [key: %{"action" => 1, "timestamp" => -1}, name: "logs_action_timestamp_idx"],
+      [key: %{"step_id" => 1, "timestamp" => -1}, name: "logs_step_timestamp_idx"]
     ],
     "webhook_endpoints" => [
       [key: %{"id" => 1}, name: "webhook_endpoints_id_unique", unique: true]

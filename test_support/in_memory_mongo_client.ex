@@ -20,7 +20,7 @@ defmodule OcppSimulator.TestSupport.InMemoryMongoClient do
   @spec reset!() :: :ok
   def reset! do
     ensure_started()
-    Agent.update(@agent, fn _ -> %{collections: %{}, indexes: %{}} end)
+    safe_update(fn _ -> %{collections: %{}, indexes: %{}} end)
   end
 
   @spec indexes_for(String.t()) :: [keyword()]
@@ -96,7 +96,9 @@ defmodule OcppSimulator.TestSupport.InMemoryMongoClient do
             if duplicate_id?(documents, id) do
               {{:error, :duplicate_key}, state}
             else
-              new_state = put_collection_documents(state, collection, [inserted_document | documents])
+              new_state =
+                put_collection_documents(state, collection, [inserted_document | documents])
+
               {{:ok, %{matched_count: 0, modified_count: 0, upserted_id: id}}, new_state}
             end
           else
@@ -220,11 +222,15 @@ defmodule OcppSimulator.TestSupport.InMemoryMongoClient do
   end
 
   defp normalize_sort(sort) when is_map(sort) do
-    Enum.map(sort, fn {key, direction} -> {to_string(key), normalize_sort_direction(direction)} end)
+    Enum.map(sort, fn {key, direction} ->
+      {to_string(key), normalize_sort_direction(direction)}
+    end)
   end
 
   defp normalize_sort(sort) when is_list(sort) do
-    Enum.map(sort, fn {key, direction} -> {to_string(key), normalize_sort_direction(direction)} end)
+    Enum.map(sort, fn {key, direction} ->
+      {to_string(key), normalize_sort_direction(direction)}
+    end)
   end
 
   defp normalize_sort(_sort), do: []
@@ -283,10 +289,14 @@ defmodule OcppSimulator.TestSupport.InMemoryMongoClient do
   defp comparable(value) when is_atom(value), do: Atom.to_string(value)
   defp comparable(value), do: inspect(value)
 
-  defp apply_skip(documents, skip) when is_integer(skip) and skip > 0, do: Enum.drop(documents, skip)
+  defp apply_skip(documents, skip) when is_integer(skip) and skip > 0,
+    do: Enum.drop(documents, skip)
+
   defp apply_skip(documents, _skip), do: documents
 
-  defp apply_limit(documents, limit) when is_integer(limit) and limit >= 0, do: Enum.take(documents, limit)
+  defp apply_limit(documents, limit) when is_integer(limit) and limit >= 0,
+    do: Enum.take(documents, limit)
+
   defp apply_limit(documents, _limit), do: documents
 
   defp stringify_keys(map) when is_map(map) do
@@ -296,4 +306,16 @@ defmodule OcppSimulator.TestSupport.InMemoryMongoClient do
   end
 
   defp fetch(map, key), do: Map.get(map, key) || Map.get(map, to_string(key))
+
+  defp safe_update(update_fun) when is_function(update_fun, 1) do
+    Agent.update(@agent, update_fun)
+  rescue
+    _ ->
+      ensure_started()
+      Agent.update(@agent, update_fun)
+  catch
+    :exit, _ ->
+      ensure_started()
+      Agent.update(@agent, update_fun)
+  end
 end

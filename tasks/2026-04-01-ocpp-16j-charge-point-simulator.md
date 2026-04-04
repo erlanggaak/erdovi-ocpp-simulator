@@ -470,6 +470,7 @@ Integration points with existing repository:
 - `test/ocpp_simulator/domain/sessions/session_state_machine_test.exs` (NEW) — Session lifecycle and message-ID uniqueness coverage.
 - `test/ocpp_simulator/domain/transactions/transaction_state_machine_test.exs` (NEW) — Transaction lifecycle transition invariants coverage.
 - `test/ocpp_simulator_web/live/` (NEW) — Critical LiveView flow tests.
+- `test/ocpp_simulator_web/live/transaction_visibility_test.exs` (NEW) — Task 9 end-to-end LiveView integration coverage for realistic transaction visibility, history queryability, and actionable validation feedback.
 - `test/ocpp_simulator_web/controllers/api/` (NEW) — Internal JSON API behavior and envelope tests.
 - `docs/ARCHITECTURE.md` (NEW) — Module boundaries, dependency direction, and extensibility guidance.
 - `docs/SETUP.md` (NEW) — Local setup and run instructions.
@@ -562,6 +563,17 @@ Integration points with existing repository:
 - `test/ocpp_simulator/application/use_cases/starter_templates_test.exs` (NEW) — Starter template catalog + permission-gated seeding coverage.
 - `test/ocpp_simulator/application/use_cases/import_export_artifacts_test.exs` (NEW) — Scenario/template bundle import-export behavior coverage.
 - `lib/ocpp_simulator_web/live/live_data.ex` (NEW) — Shared LiveView data helper for role checks, repository lookup, and normalized filter parsing used by Task 7 screens.
+- `lib/ocpp_simulator_web/controllers/api/response.ex` (NEW) — Standardized internal API response envelope and actionable error mapping helper.
+- `lib/ocpp_simulator_web/controllers/api/webhook_endpoint_controller.ex` (NEW) — Internal API controller for webhook endpoint configuration list/upsert flows.
+- `lib/ocpp_simulator/infrastructure/integrations/http_client.ex` (NEW) — HTTP client adapter used by webhook dispatcher with timeout support.
+- `lib/ocpp_simulator/infrastructure/integrations/webhook_dispatcher.ex` (NEW) — Webhook delivery dispatcher with retry/backoff, failure tracking, and signature validation.
+- `lib/ocpp_simulator/infrastructure/observability/structured_logger.ex` (NEW) — Structured logger implementation with correlation metadata and Mongo log persistence.
+- `lib/ocpp_simulator/infrastructure/security/sensitive_data_masker.ex` (NEW) — Sensitive payload masker for logs and API error response details.
+- `lib/ocpp_simulator/infrastructure/support/id_generator.ex` (NEW) — Default unique ID generator used by run and webhook delivery flows.
+- `docs/API.md` (NEW) — Internal API route contract, response envelope, and error schema documentation.
+- `test/ocpp_simulator/infrastructure/integrations/webhook_dispatcher_test.exs` (NEW) — Webhook reliability coverage for success, retry, and failed-delivery tracking behavior.
+- `test/ocpp_simulator/infrastructure/observability/structured_logger_test.exs` (NEW) — Structured logger masking + persistence behavior coverage.
+- `test/ocpp_simulator/infrastructure/security/sensitive_data_masker_test.exs` (NEW) — Sensitive-field masking regression coverage.
 
 ### 8. Open Questions / Concerns
 All previously listed questions are resolved in this revision.
@@ -679,38 +691,38 @@ Implement `lib/ocpp_simulator_web/live/live_console_live.ex` and `lib/ocpp_simul
 Implement `lib/ocpp_simulator_web/live/logs_live.ex` as a dedicated logs viewer with pagination, filter-first search, and correlation-ID drill-down across run/session/message context.
 
 # Task 8 — Deliver internal API, observability, security hardening, and webhook reliability
-- [ ] Task 8.1
+- [x] Task 8.1
 Implement internal JSON API endpoints in `lib/ocpp_simulator_web/controllers/api/` for automation-triggered runs, import/export flows, and webhook endpoint configuration, with a standardized response envelope and actionable error schema documented in `docs/API.md`.
 
-- [ ] Task 8.2
+- [x] Task 8.2
 Implement structured event logging and correlation fields across scenario, protocol, session, auth, and persistence events with storage support in `lib/ocpp_simulator/infrastructure/persistence/mongo/`.
 
-- [ ] Task 8.3
+- [x] Task 8.3
 Implement sensitive-data masking defaults in `lib/ocpp_simulator/infrastructure/security/sensitive_data_masker.ex` and ensure logs/error payloads avoid exposing secrets, credentials, and token-like values.
 
-- [ ] Task 8.4
+- [x] Task 8.4
 Implement webhook endpoint configuration and delivery processing in `lib/ocpp_simulator/infrastructure/integrations/webhook_dispatcher.ex`, including retries, failure tracking, completion/failure triggers, and request signature validation.
 
-- [ ] Task 8.5
+- [x] Task 8.5
 Expose and document configurable concurrency limits, retry/backoff policy, connection pool/backpressure controls, and performance-related runtime controls through `config/runtime.exs` and `docs/SETUP.md`.
 
 # Task 9 — Complete quality gates, tests, and OSS-grade documentation
-- [ ] Task 9.1
+- [x] Task 9.1
 Implement comprehensive test coverage in `test/ocpp_simulator/` and `test/ocpp_simulator_web/live/` across domain invariants, protocol handling, orchestration behavior, repository adapters, auth boundaries, and critical UI flows.
 
-- [ ] Task 9.2
+- [x] Task 9.2
 Add end-to-end integration coverage for at least one realistic transaction scenario proving real-time visibility and post-run historical queryability from LiveView interfaces.
 
-- [ ] Task 9.3
+- [x] Task 9.3
 Add explicit test cases for schema-safe visual/JSON round trip, validation-gated execution blocking, and actionable UI error display when schema/state-transition checks fail.
 
-- [ ] Task 9.4
+- [x] Task 9.4
 Add webhook reliability/security tests for retry behavior, failure visibility, signature validation, and secret-handling safety in logging.
 
-- [ ] Task 9.5
+- [x] Task 9.5
 Add non-functional tests for bounded concurrency, WebSocket backpressure behavior, and logs/history pagination performance baselines.
 
-- [ ] Task 9.6
+- [x] Task 9.6
 Produce OSS documentation and governance files in `README.md`, `docs/ARCHITECTURE.md`, `docs/SETUP.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and `LICENSE`, including extension guidance for new OCPP actions, step types, and persistence adapters.
 
 </task>
@@ -759,3 +771,17 @@ Produce OSS documentation and governance files in `README.md`, `docs/ARCHITECTUR
 - Added focused Task 7 web routing/authorization coverage in `test/ocpp_simulator_web/router_authorization_test.exs`, including scenario-builder role gating, management-screen rendering, and monitoring route behavior.
 - Validation: full test suite passes with `mix test` (`113` tests passing, `1` skipped).
 - Assumption: until full user identity/session auth flows are implemented, `current_role` in session remains the authenticated role source for LiveView route and UI permission behavior.
+- Implemented Task `8.1` by refactoring internal API controllers to execute real use-case flows for run automation, management actions, artifact import/export, and webhook endpoint configuration, with a shared response envelope/error mapper in `OcppSimulatorWeb.Api.Response` and route contract docs in `docs/API.md`.
+- Implemented Task `8.2` by adding structured event logging (`OcppSimulator.Infrastructure.Observability.StructuredLogger`) and wiring correlation-aware events across run orchestration, protocol/session handling, auth plugs, and Mongo adapter operations, with persisted log entries via `LogRepository`.
+- Implemented Task `8.3` by adding `SensitiveDataMasker` and applying it to structured logs, webhook payload/response summaries, and API error detail rendering to prevent leaking secrets/token-like values.
+- Implemented Task `8.4` by implementing `WebhookDispatcher` + `HttpClient` with endpoint-filtered terminal-event fan-out, persisted delivery lifecycle (`queued/retrying/delivered/failed`), retry/backoff behavior, failure tracking, and HMAC-SHA256 request signature generation/validation.
+- Implemented Task `8.5` by exposing runtime controls for run/session concurrency, reconnect and outbound queue backpressure/retries, webhook timeout/retry defaults, and documenting them in `.env.example`, `docs/SETUP.md`, and `docs/ARCHITECTURE.md`.
+- Added focused Task 8 coverage for API envelope/authorization behavior, webhook reliability and signature flow, sensitive-data masking, structured logger persistence, and run concurrency-limit enforcement.
+- Validation: full test suite passes with `mix test` (`123` tests passing, `1` skipped).
+- Assumption: webhook `secret_ref` is treated as direct HMAC secret material in this batch; secret-manager indirection can be introduced later without changing dispatcher contract.
+- Implemented Task `9.1` by adding/expanding quality-gate coverage across application orchestration, transport backpressure, persistence pagination, webhook reliability/security, sensitive logging, and dedicated LiveView integration tests under `test/ocpp_simulator_web/live/`.
+- Implemented Task `9.2` with `transaction_visibility_test.exs`, which executes a realistic Boot/Authorize/Start/Meter/Stop transaction flow end-to-end and verifies run visibility/queryability from `LiveConsoleLive`, `RunHistoryLive`, and `LogsLive`.
+- Implemented Task `9.3` by validating actionable UI error surfaces for schema failures (Scenario Builder field-level + summary messages) and state-transition validation failures (Run History failure reason visibility), while keeping existing round-trip and validation-gate tests in place.
+- Implemented Task `9.4` by extending webhook/security tests with signature validation success/failure checks, retry/failure metadata assertions (`last_error`), and redaction assertions across persisted webhook payloads, outbound webhook bodies, structured logs, and masking unit tests.
+- Implemented Task `9.5` by adding non-functional baseline tests for bounded concurrency query shape (`page_size: 1` + queued/running state filter), low-latency saturated-queue backpressure rejection, and bounded latency for paginated history/log queries over larger in-memory datasets.
+- Implemented Task `9.6` by upgrading OSS docs (`README.md`, `docs/ARCHITECTURE.md`, `docs/SETUP.md`, `CONTRIBUTING.md`) with explicit extension playbooks/checklists for new OCPP actions, scenario step types, and persistence adapters, and by adding missing governance artifacts (`CODE_OF_CONDUCT.md`, `LICENSE`).

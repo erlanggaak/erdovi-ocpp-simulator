@@ -118,6 +118,89 @@ Run lifecycle notes:
 - `finalize_run` transitions state to `succeeded`, `failed`, `canceled`, or `timed_out`.
 - `trigger_webhook` dispatches terminal run events through the configured webhook dispatcher.
 
+## Internal API Envelope
+
+All `/api/*` endpoints return a consistent envelope:
+
+- `ok` (`true|false`)
+- `data` (result payload or `null`)
+- `error` (structured error payload or `null`)
+- `meta` (includes `request_id` when available)
+
+Detailed route and payload contract is documented in `docs/API.md`.
+
+## Structured Event Logging
+
+Structured event logging is centralized in:
+
+- `OcppSimulator.Infrastructure.Observability.StructuredLogger`
+
+Sensitive fields are masked using:
+
+- `OcppSimulator.Infrastructure.Security.SensitiveDataMasker`
+
+Event classes currently emitted include:
+
+- `scenario.*` run orchestration events
+- `protocol.*` frame handling events
+- `session.*` session lifecycle events
+- `auth.*` role/permission events
+- `persistence.*` Mongo adapter operation events
+- `webhook.*` delivery lifecycle events
+
+Primary correlation fields:
+
+- `run_id`
+- `session_id`
+- `charge_point_id`
+- `message_id`
+- `action`
+- `step_id`
+
+## Webhook Reliability
+
+Terminal run states (`succeeded`, `failed`, `canceled`, `timed_out`) trigger webhook dispatch.
+
+Delivery guarantees in current implementation:
+
+- endpoint-filtered fan-out (`webhook_endpoints.events`)
+- persisted delivery lifecycle (`queued -> retrying -> delivered|failed`)
+- bounded retries with backoff (`retry_policy` or runtime defaults)
+- HMAC-SHA256 signature header support when `secret_ref` is configured
+
+## Extension Playbooks
+
+### Add A New OCPP Action
+
+1. Extend action payload schema handling in `OcppSimulator.Infrastructure.Serialization.OcppJson.PayloadValidator`.
+2. Ensure action framing/decoding paths stay compatible in `OcppSimulator.Infrastructure.Serialization.OcppJson`.
+3. Add action semantics where required:
+   - outbound flow (`RunScenario` step handling)
+   - inbound CSMS command handling (`RemoteOperationHandler`) when applicable.
+4. Add test coverage:
+   - protocol schema and frame tests
+   - run orchestration/state-transition tests
+   - UI preview/builder behavior when action is user-facing.
+
+### Add A New Scenario Step Type
+
+1. Define normalization and validation constraints in `OcppSimulator.Domain.Scenarios.Scenario`.
+2. Add execution behavior in `OcppSimulator.Application.UseCases.RunScenario`.
+3. Extend dual-mode builder translation if the step is authorable in UI:
+   - `ScenarioEditor`
+   - `ScenarioBuilderLive` preview and validation feedback.
+4. Add targeted tests for:
+   - schema-safe visual/JSON round trip
+   - strict validation gate behavior
+   - actionable UI error display.
+
+### Add A New Persistence Adapter
+
+1. Implement the required application contracts under `lib/ocpp_simulator/application/contracts/`.
+2. Keep domain/application modules unchanged; adapters must remain inward-facing.
+3. Register adapter modules through config/runtime wiring, not direct domain references.
+4. Re-run contract tests against the new adapter and keep Mongo adapter behavior as baseline parity.
+
 ## Index Bootstrap
 
 At runtime, index bootstrap is started automatically when both flags are enabled:
